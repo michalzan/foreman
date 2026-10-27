@@ -1,0 +1,6 @@
+{
+  "name": "michalzan",
+  "description": "Michal Zan's Claude Code plugins",
+  "owner": {"name": "Michal Zan"},
+  "plugins": [{"name": "foreman", "source": "./"}]
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Foreman: doctor at session start, guard before tool calls, check before each subagent, stop gate at every stop",
+  "hooks": {
+    "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [
+      {"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" doctor.py", "timeout": 15}]}],
+    "PreToolUse": [{"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit", "hooks": [
+      {"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" guard.py", "timeout": 10}]},
+      {"matcher": "Agent|Task", "hooks": [
+      {"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" unit_gate.py", "timeout": 1200,
+       "statusMessage": "foreman: checking before the next unit"}]}],
+    "Stop": [{"hooks": [
+      {"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" stop_gate.py", "timeout": 1200,
+       "statusMessage": "foreman: checking before stop"}]}]
+  }
+}
