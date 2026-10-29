@@ -296,10 +296,11 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
             st.write(s)
         s = st.read()
         run = st.run()
-        # Measure from the newest of: the last passed stop, the run's start, this session's start. Commits made
-        # while the gates were off belong to none of them.
-        since = gitutil.newest(root, [s.get("passed_head", ""), (run or {}).get("start_head", ""),
-                                      st.session_head(sid)])
+        # Measure from the newest of: the last passed stop, the run's start, and outside a run this session's
+        # start. Commits made while the gates were off belong to none of them. A run continued in a new
+        # session (after /clear, a crash, a restart for stale hooks) still answers for all its commits.
+        since = gitutil.newest(root, [s.get("passed_head", ""), (run or {}).get("start_head", "")]
+                               + ([] if run else [st.session_head(sid)]))
         frontend = [f for f in gitutil.changed_files(root, since)
                     if decl.frontend_paths and f.startswith(decl.frontend_paths)]
         if frontend and not _walkthrough_is_fresh(st, root, frontend):

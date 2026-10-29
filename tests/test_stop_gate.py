@@ -579,3 +579,28 @@ def test_the_sessions_own_frontend_commit_still_needs_a_walkthrough(repo):
     frontend_commit(repo)
     out = stop_gate.evaluate(inp(repo), check=passing([]))
     assert out.action == "block" and "frontend/src/a.tsx" in out.reason
+
+
+def test_a_run_continued_in_a_new_session_still_walks_through_its_earlier_frontend_commits(repo):
+    """Quitting and restarting claude mid-run (as the stale-hooks warning asks) starts a new session."""
+    passed_long_ago(repo)
+    (repo / "PLAN.md").write_text("resume: W8\n")
+    State(repo).start_run([("PLAN.md", ["W8"])], sh(repo, "git", "rev-parse", "HEAD").strip())
+    frontend_commit(repo)
+    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
+    legit = lambda *a: type("V", (), {"legitimate": True, "why": ""})()
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: W8."), check=passing([]), ask=legit)
+    assert out.action == "block" and "frontend/src/a.tsx" in out.reason
+
+
+def test_rewritten_history_still_counts_the_frontend_commits(repo):
+    """After an amend or rebase no recorded commit is in HEAD any more; that must not mean nothing changed."""
+    frontend_commit(repo)
+    passed = sh(repo, "git", "rev-parse", "HEAD").strip()
+    st = State(repo)
+    st.write({**st.read(), "passed_head": passed})
+    (repo / "frontend" / "src" / "b.tsx").write_text("y")
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-q", "--amend", "-m", "a and b")
+    out = stop_gate.evaluate(inp(repo), check=passing([]))
+    assert out.action == "block" and "frontend/src/b.tsx" in out.reason

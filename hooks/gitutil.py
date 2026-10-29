@@ -55,12 +55,21 @@ def dirty_files(root: Path) -> list[str]:
 
 
 def newest(root: Path, commits: list[str]) -> str:
-    """The commit among these that all the others lead to, of those HEAD contains; "" when none fits."""
+    """The commit among these that all the others lead to, of those HEAD contains. When HEAD contains none
+    (an amend or rebase rewrote them), where HEAD's history left the first one git still knows, so the
+    rewritten commits count as changed; "" only when git knows none."""
     def contains(a: str, b: str) -> bool:
         return subprocess.run(["git", "merge-base", "--is-ancestor", a, b], cwd=root, capture_output=True,
                               timeout=TIMEOUT).returncode == 0
     known = [c for c in dict.fromkeys(commits) if c and contains(c, "HEAD")]
-    return next((c for c in known if all(contains(o, c) for o in known)), known[0] if known else "")
+    if known:
+        return next((c for c in known if all(contains(o, c) for o in known)), known[0])
+    for c in filter(None, commits):
+        try:
+            return git(root, "merge-base", c, "HEAD").strip()
+        except subprocess.CalledProcessError:
+            continue
+    return ""
 
 
 def changed_files(root: Path, since: str) -> list[str]:
