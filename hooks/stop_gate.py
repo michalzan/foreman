@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,21 +168,48 @@ CHANGED = (f"foreman: {declaration.NAME} changed since you approved it, so the g
 
 def changed_during_run(st: State, counter: str, fresh: bool = False) -> Outcome:
     """A run is active but its declaration no longer matches the approval: hold the session instead of letting
-    the gates go quietly off. After MAX_ATTEMPTS it lets go, loudly. The session cannot approve it itself:
-    the guard asks before trust.py approve."""
+    the gates go quietly off. The session cannot approve it itself: the guard asks before trust.py approve."""
+    return hold(st, counter, "declaration", CHANGED,
+                f"DECLARATION CHANGED during the run and not restored after {MAX_ATTEMPTS} attempts: "
+                f"the gates are off until {declaration.NAME} is approved again.", fresh)
+
+
+def hold(st: State, counter: str, step: str, reason: str, gave_up: str, fresh: bool = False) -> Outcome:
+    """Block a run's stop for something only the user can put right; after MAX_ATTEMPTS let go, loudly."""
     s = st.read()
     n = 0 if fresh else int(s.get(counter, 0))
     if n >= MAX_ATTEMPTS:
         s[counter] = 0
         st.write(s)
-        st.log(step="declaration", action="gave_up")
-        return Outcome("allow", warning=(
-            f"foreman: DECLARATION CHANGED during the run and not restored after {MAX_ATTEMPTS} attempts: "
-            f"the gates are off until {declaration.NAME} is approved again."))
+        st.log(step=step, action="gave_up")
+        return Outcome("allow", warning=f"foreman: {gave_up}")
     s[counter] = n + 1
     st.write(s)
-    st.log(step="declaration", action="block")
-    return Outcome("block", reason=CHANGED)
+    st.log(step=step, action="block")
+    return Outcome("block", reason=reason)
+
+
+def _opening(message: str) -> str:
+    m = message.lstrip().lower()
+    return next((k for k, p in (("complete", "run complete"), ("blocked", "blocked on you"),
+                                ("decision", "decision needed")) if m.startswith(p)), "other")
+
+
+def _stale(inp: dict, now: float) -> Outcome | None:
+    """Hooks loaded before they last changed: during a run, hold it until the session hands back to the user."""
+    root = declaration.find_root(Path(inp.get("cwd") or os.getcwd()))
+    if root is None or not trust.is_trusted(root) or not gitutil.is_toplevel(root):
+        return None
+    st = State(root)
+    if not st.run():
+        st.log(step="hooks", action="stale")
+        return None
+    if _opening(str(inp.get("last_assistant_message") or "")) in ("blocked", "decision") or running_subagents(inp, now):
+        return None
+    return hold(st, "stale_blocks", "hooks", (
+        f"foreman: {hookio.STALE}. The run cannot go on without its gates. Stop now with 'Blocked on you:' "
+        "and ask the user to restart claude and continue the run."),
+        f"STALE HOOKS: {hookio.STALE}. Let go after {MAX_ATTEMPTS} attempts.", fresh=not inp.get("stop_hook_active"))
 
 
 def _walkthrough_is_fresh(st: State, root: Path, frontend_files: list[str]) -> bool:
@@ -190,7 +218,18 @@ def _walkthrough_is_fresh(st: State, root: Path, frontend_files: list[str]) -> b
     return not edits or (bool(shots) and max(shots) > max(edits))
 
 
-def evaluate(inp: dict, *, check=run_check, ask=judge.ask, now: float | None = None) -> Outcome:
+def evaluate(inp: dict, *, check=run_check, ask=judge.ask, now: float | None = None, stale: bool = False) -> Outcome:
+    if stale:
+        held = _stale(inp, time.time() if now is None else now)
+        if held:
+            return held
+    out = _evaluate(inp, check=check, ask=ask, now=now)
+    if stale and out.action == "allow":
+        out = Outcome("allow", warning="\n".join(filter(None, [out.warning, f"foreman: {hookio.STALE}."])))
+    return out
+
+
+def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
     root = declaration.find_root(Path(inp.get("cwd") or os.getcwd()))
     if root is None:
         return Outcome("allow")
@@ -257,8 +296,10 @@ def evaluate(inp: dict, *, check=run_check, ask=judge.ask, now: float | None = N
             st.write(s)
         s = st.read()
         run = st.run()
-        # On the first stop of a run or a fresh worktree nothing has passed yet: measure from the run's start.
-        since = s.get("passed_head", "") or (run or {}).get("start_head", "")
+        # Measure from the newest of: the last passed stop, the run's start, this session's start. Commits made
+        # while the gates were off belong to none of them.
+        since = gitutil.newest(root, [s.get("passed_head", ""), (run or {}).get("start_head", ""),
+                                      st.session_head(sid)])
         frontend = [f for f in gitutil.changed_files(root, since)
                     if decl.frontend_paths and f.startswith(decl.frontend_paths)]
         if frontend and not _walkthrough_is_fresh(st, root, frontend):
@@ -298,10 +339,11 @@ def evaluate(inp: dict, *, check=run_check, ask=judge.ask, now: float | None = N
                 "push the working branch and continue with the next unblocked unit. "
                 "If you must stop, open with 'Decision needed:', 'Blocked on you:' or 'Run complete:'."))
         if message.lstrip().lower().startswith("run complete"):
-            st.end_run()
+            st.end_run("complete")
 
     _save_counts(st, sid, {})
-    st.log(step="stop", action="allow")
+    st.log(step="stop", action="allow", **({"opening": _opening(str(inp.get("last_assistant_message") or ""))}
+                                           if run else {}))
     return Outcome("allow")
 
 
@@ -309,7 +351,7 @@ def main() -> int:
     if os.environ.get("FOREMAN_JUDGE"):
         return 0
     try:
-        out = evaluate(hookio.read_input())
+        out = evaluate(hookio.read_input(), stale=hookio.stale(sys.argv[1:]))
     except Exception as e:  # fail open and loud: a broken gate must not trap the session
         hookio.emit({"systemMessage": f"foreman: stop gate crashed, stop allowed unverified: {e!r}"})
         return 0

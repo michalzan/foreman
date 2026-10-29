@@ -83,3 +83,21 @@ def test_symlinked_files_inside_are_not_followed(repo, tmp_path):
     st.write({"a": 1})
     assert target.read_text() == "keep\n"
     assert st.read() == {"a": 1}
+
+
+def test_start_and_end_of_a_run_are_logged_without_content(repo):
+    st = State(repo)
+    st.start_run([("PLAN.md", ["W8", "W9"])], "abc")
+    st.end_run("stopped")
+    rows = [json.loads(x) for x in (st.dir / "gate.log").read_text().splitlines()]
+    assert {"step": "run", "action": "start", "units": 2, "head": "abc"}.items() <= rows[0].items()
+    assert {"step": "run", "action": "end", "how": "stopped"}.items() <= rows[1].items()
+    assert "PLAN.md" not in (st.dir / "gate.log").read_text() and "W8" not in (st.dir / "gate.log").read_text()
+
+
+def test_a_session_keeps_the_start_it_was_first_given(repo):
+    """SessionStart fires again after compaction and on resume, with the same id: the first start must stay."""
+    st = State(repo)
+    st.session_started("s1", "aaa")
+    st.session_started("s1", "bbb")
+    assert st.session_head("s1") == "aaa"

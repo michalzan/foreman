@@ -3,7 +3,7 @@ import json
 import sys
 
 import stop_gate
-from conftest import DECL, write_decl
+from conftest import DECL, sh, write_decl
 from state import State
 
 
@@ -490,3 +490,92 @@ def test_waiting_for_a_subagent_is_still_allowed_with_a_changed_declaration(repo
     changed(repo)
     running = [{"id": "a867", "type": "subagent", "status": "running"}]
     assert stop_gate.evaluate(inp(repo, background_tasks=running), check=boom, ask=boom, now=NOW).action == "allow"
+
+
+# Hooks loaded before they last changed (A6 pilot run, 2026-10-28): the process ran without the unit gate.
+
+def test_stale_hooks_hold_a_run_until_the_session_hands_back(repo):
+    start_run(repo)
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Unit 2 done, starting unit 3."), stale=True,
+                             check=boom, ask=boom)
+    assert out.action == "block" and "quit claude" in out.reason and "Blocked on you" in out.reason
+    legit = lambda *a: type("V", (), {"legitimate": True, "why": ""})()
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: restart claude."), stale=True,
+                             check=passing([]), ask=legit)
+    assert out.action == "allow" and "quit claude" in out.warning
+
+
+def test_stale_hooks_outside_a_run_only_warn(repo):
+    out = stop_gate.evaluate(inp(repo), stale=True, check=passing([]))
+    assert out.action == "allow" and "quit claude" in out.warning
+
+
+def test_stale_hooks_let_go_after_three_holds(repo):
+    start_run(repo)
+    held = inp(repo, stop_hook_active=True, last_assistant_message="carrying on")
+    assert stop_gate.evaluate(inp(repo), stale=True, check=boom, ask=boom).action == "block"
+    for _ in range(2):
+        assert stop_gate.evaluate(held, stale=True, check=boom, ask=boom).action == "block"
+    out = stop_gate.evaluate(held, stale=True, check=boom, ask=boom)
+    assert out.action == "allow" and "STALE HOOKS" in out.warning
+    assert '"step": "hooks", "action": "gave_up"' in (repo / ".foreman" / "gate.log").read_text()
+
+
+def test_main_reads_the_stamp_it_was_launched_with(repo, monkeypatch):
+    start_run(repo)
+    monkeypatch.setattr(sys, "argv", ["stop_gate.py"])  # a registration from before the stamp
+    code, out = run_main(monkeypatch, inp(repo))
+    assert out["decision"] == "block" and "quit claude" in out["reason"]
+
+
+# The log says how a run began and ended, without any of its content.
+
+def test_the_end_of_a_run_is_logged_with_its_opening(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: W8, W9."), check=passing([]),
+                       ask=lambda *a: type("V", (), {"legitimate": True, "why": ""})())
+    events = [json.loads(x) for x in (repo / ".foreman" / "gate.log").read_text().splitlines()]
+    assert {"step": "run", "action": "end", "how": "complete"}.items() <= events[-2].items()
+    assert {"step": "stop", "action": "allow", "opening": "complete"}.items() <= events[-1].items()
+
+
+# The walkthrough charges a session only for its own frontend changes. In a pilot project (2026-10-29) the gates had been
+# off since the rename; the first gated stop was charged for 13 ungated commits since the last passed head.
+
+def frontend_commit(repo, name="a.tsx"):
+    (repo / "frontend" / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "frontend" / "src" / name).write_text("x")
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-q", "-m", name)
+    return sh(repo, "git", "rev-parse", "HEAD").strip()
+
+
+def passed_long_ago(repo):
+    old = sh(repo, "git", "rev-parse", "HEAD").strip()
+    st = State(repo)
+    st.write({**st.read(), "passed_head": old})
+
+
+def test_frontend_commits_from_before_the_session_are_not_charged_to_it(repo):
+    passed_long_ago(repo)
+    frontend_commit(repo)
+    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
+    assert stop_gate.evaluate(inp(repo), check=passing([])).action == "allow"
+
+
+def test_frontend_commits_from_before_the_run_are_not_charged_to_it(repo):
+    passed_long_ago(repo)
+    frontend_commit(repo)
+    (repo / "PLAN.md").write_text("resume: W8\n")
+    State(repo).start_run([("PLAN.md", ["W8"])], sh(repo, "git", "rev-parse", "HEAD").strip())
+    legit = lambda *a: type("V", (), {"legitimate": True, "why": ""})()
+    assert stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: W8."), check=passing([]),
+                              ask=legit).action == "allow"
+
+
+def test_the_sessions_own_frontend_commit_still_needs_a_walkthrough(repo):
+    passed_long_ago(repo)
+    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
+    frontend_commit(repo)
+    out = stop_gate.evaluate(inp(repo), check=passing([]))
+    assert out.action == "block" and "frontend/src/a.tsx" in out.reason

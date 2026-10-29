@@ -117,10 +117,21 @@ def main(argv: list[str]) -> int:
         return 0
     cli = "--cli" in argv
     try:
-        cwd = Path.cwd() if cli else Path(hookio.read_input().get("cwd") or os.getcwd())
+        inp = {} if cli else hookio.read_input()
+        cwd = Path.cwd() if cli else Path(inp.get("cwd") or os.getcwd())
         found = findings(cwd, Path.home())
+        if not cli and hookio.stale(argv):
+            found.insert(0, hookio.STALE)
     except Exception as e:  # never block a session start
         found = [f"doctor crashed: {e!r}"]
+    if not cli:
+        try:  # where this session began, so the walkthrough gate charges it only for its own changes
+            root = declaration.find_root(cwd)
+            if root and trust.is_trusted(root) and gitutil.is_toplevel(root):
+                State(root).session_started(str(inp.get("session_id", "")), gitutil.head(root))
+        except Exception as e:
+            found.append(f"could not record where this session began, so the walkthrough gate may ask about "
+                         f"earlier changes: {e!r}")
     if cli:
         print("\n".join(found) or "foreman: ok")
     elif found:

@@ -177,3 +177,24 @@ def test_restoring_the_declaration_resets_the_refusals(repo):
     (repo / ".foreman.toml").write_text(DECL + "\n# changed again\n")
     for _ in range(3):
         assert unit_gate.evaluate(inp(repo), check=boom, now=NOW).action == "deny"
+
+
+# Every decision is logged, so a launch the gate skipped differs from a launch it never saw (A6, 2026-10-28).
+
+def events(repo):
+    return [json.loads(x) for x in (repo / ".foreman" / "gate.log").read_text().splitlines()]
+
+
+def test_a_skip_for_a_tree_that_already_passed_is_logged(repo):
+    start_run(repo)
+    (repo / "a.py").write_text("x")
+    unit_gate.evaluate(inp(repo), check=passing([]), now=NOW)
+    unit_gate.evaluate(inp(repo), check=boom, now=NOW)
+    assert {"step": "unit_check", "action": "skip", "why": "passed"}.items() <= events(repo)[-1].items()
+
+
+def test_a_skip_while_a_subagent_works_is_logged(repo, tmp_path):
+    start_run(repo)
+    t = transcript(tmp_path, launched("a8278cc01bf5e8bd8"))
+    unit_gate.evaluate(inp(repo, transcript_path=t), check=boom, now=NOW)
+    assert {"step": "unit_check", "action": "skip", "why": "subagent"}.items() <= events(repo)[-1].items()

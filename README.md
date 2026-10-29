@@ -8,7 +8,7 @@ Claude Code can already do hours of planned work on its own. What stops it is th
 
 Use it when you have a reviewed plan, a project check that fails when something is broken, and work that needs your local machine. Skip it for exploratory work, where the questions are the point.
 
-Status: a personal tool shared as is, under the MIT licence (`LICENSE`). Seven runs so far, about 60 units, all by one person on two projects. Tested with Claude Code 2.1.310; hooks depend on Claude Code's behaviour, so a later version may break something. Issues and ideas are welcome; support is not promised.
+Status: a personal tool shared as is, under the MIT licence (`LICENSE`). Nine runs so far, about 70 units, all by one person on two projects. Tested with Claude Code 2.1.312; hooks depend on Claude Code's behaviour, so a later version may break something. Issues and ideas are welcome; support is not promised.
 
 ---
 
@@ -41,7 +41,7 @@ The scarce resource is your attention, not the model's ability or tokens. The ai
 ### What it adds
 
 1. **A stop has to be earned.** Check, resume point, screenshot of changed screens, then the judge. Cheap decisions are made and logged, expensive ones are parked, and the run moves to the next unit.
-2. **A gate that has never failed proves nothing.** `/foreman:init` compares the check with everything the repository has, and proves with a canary test that each suite can actually turn it red. On the first project, the audit found that `make check` did not run the frontend tests at all.
+2. **A gate that has never failed proves nothing.** `/foreman:init` compares the check with everything the repository has, and proves with a canary that each gate (tests, types, linters, formatters, migrations, docs builds) can actually turn it red, or says which it could not prove. On the first project, the audit found that `make check` did not run the frontend tests at all.
 3. **A hand-back you can review later.** Commits per unit, a decisions log, parked questions and a fixed opening line. You come back to a report, not a chat history.
 4. **It cannot switch itself off quietly.** Approved declarations, a guard on its own files, and a doctor at every session start.
 
@@ -61,8 +61,9 @@ The scarce resource is your attention, not the model's ability or tokens. The ai
 | Unit gate (`PreToolUse` hook on `Agent`) | While a run is active, runs the project check before the next subagent starts, the one moment the previous unit is finished and nothing writes to the tree. A failing check refuses the launch with its output; after 3 refusals it lets the launch go and records why. |
 | Guard (`PreToolUse` hook) | Forces a permission prompt before a push to a protected branch, a merge of a pull request, `git clean -x`, switching off or removing a plugin, or any edit of Foreman's own files. It never blocks on its own; it asks you. It also covers subagents' tool calls. |
 | Doctor (`SessionStart` hook) | At every session start and after compaction, says whether Foreman is intact for this project and, during a run, which units are left and the run contract again. |
-| `/foreman:init` skill | Audits a repository's checks, proves each test suite can fail (canary test), proposes fixes and writes `.foreman.toml`. |
+| `/foreman:init` skill | Audits a repository's checks, proves each gate can fail (a canary per gate), proposes fixes and writes `.foreman.toml`. |
 | `/foreman:run` skill | Starts a run on one plan, or a chain of plans on stacked branches. Each unit goes to a fresh subagent so the main context stays small. |
+| `/foreman:report` skill | Checks each run in the gate log against what the gates promise and prints a report without content, ready for an issue. |
 | Run contract | The rules a session follows during a run (commit per unit, decisions log, parked file, hand-back). It enters the conversation only when a run starts, so sessions without a run never carry it. |
 
 ---
@@ -86,7 +87,7 @@ It is a Claude Code plugin. This repository is both the plugin and a one-plugin 
 
 or from a clone, with `claude plugin marketplace add ~/path/to/foreman` as the first line. Start a new session afterwards.
 
-To update: from GitHub, `claude plugin marketplace update michalzan` and then `claude plugin update foreman@michalzan`; from a clone, `git pull` is enough, because a marketplace added from a local path is loaded in place. Either way the next session uses the new version. A GitHub install only updates when the `version` in `.claude-plugin/plugin.json` goes up, so releases are deliberate and a half-finished commit does not reach your sessions.
+To update: from GitHub, `claude plugin marketplace update michalzan` and then `claude plugin update foreman@michalzan`; from a clone, `git pull` is enough, because a marketplace added from a local path is loaded in place. Either way, quit `claude` and start it again: Claude Code reads the hook registrations once, when it starts, and `/clear` keeps them. A process started before an update runs the new scripts under the old registrations, so a hook added since never runs. The doctor says so at session start, and during a run the stop gate holds the session until it hands back. A GitHub install only updates when the `version` in `.claude-plugin/plugin.json` goes up, so releases are deliberate and a half-finished commit does not reach your sessions.
 
 To remove it:
 
@@ -119,6 +120,8 @@ Run the tests with `uv run pytest`.
         /foreman:run docs/plans/a.md docs/plans/b.md     # a chain: b is built on top of a
 
 4. **Come back to the hand-back.** The last message opens with `Run complete:`, `Blocked on you:` or `Decision needed:` and lists the units done, the decisions made (in the decisions log) and the questions parked.
+
+5. **Check that Foreman did its job:** `/foreman:report` reads the project's gate log and checks every run against what the gates promise. It checks that the hooks were loaded as installed, that the unit gate decided before every subagent launch, that no gate gave up, that the judge was available, that the check passed at the end, and that the run handed back. The log holds only structure (steps, decisions, durations), and so does the report, so after reading it you can paste it into an [issue](https://github.com/michalzan/foreman/issues).
 
 Do not `/clear` or re-run `/foreman:init` during a run: `/clear` starts a new session the run is not bound to. Merging into protected branches stays your job.
 

@@ -143,7 +143,7 @@ def test_session_start_output_shape(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"cwd": str(repo)})))
     buf = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
-    assert doctor.main([]) == 0
+    assert doctor.main([doctor.hookio.stamp()]) == 0
     out = json.loads(buf.getvalue())
     assert "no audit recorded" in out["systemMessage"]
     assert out["hookSpecificOutput"] == {"hookEventName": "SessionStart",
@@ -165,10 +165,10 @@ def test_during_a_run_the_session_start_context_carries_the_contract(repo, tmp_p
     monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo)})
     home = make_home(tmp_path)
     monkeypatch.setattr(doctor.Path, "home", lambda: home)
-    doctor.main([])
+    doctor.main([doctor.hookio.stamp()])
     assert capsys.readouterr().out == ""
     State(repo).start_run([("PLAN.md", ["W8"])], "")
-    doctor.main([])
+    doctor.main([doctor.hookio.stamp()])
     context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "run active: W8" in context and "## Run contract" in context
 
@@ -193,3 +193,36 @@ def test_a_project_with_the_old_names_is_told_to_migrate(tmp_path):
     (root / ".harness.toml").write_text(DECL)
     out = doctor.findings(root / "sub", make_home(tmp_path))
     assert len(out) == 1 and "old file names" in out[0] and "migrate.py" in out[0]
+
+
+def test_hooks_loaded_before_they_last_changed_are_named(repo, tmp_path, monkeypatch, capsys):
+    """/clear does not reload hooks.json; the A6 pilot run (2026-10-28) ran without the unit gate because of it."""
+    audited(repo)
+    monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo)})
+    home = make_home(tmp_path)
+    monkeypatch.setattr(doctor.Path, "home", lambda: home)
+    doctor.main(["0" * 12])
+    assert "quit claude and start it again" in json.loads(capsys.readouterr().out)["systemMessage"]
+    doctor.main([doctor.hookio.stamp()])
+    assert capsys.readouterr().out == ""
+
+
+def test_the_session_start_records_where_the_session_began(repo, tmp_path, monkeypatch, capsys):
+    audited(repo)
+    monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo), "session_id": "s9"})
+    monkeypatch.setattr(doctor.Path, "home", lambda: make_home(tmp_path))
+    doctor.main([doctor.hookio.stamp()])
+    assert State(repo).session_head("s9") == doctor.gitutil.head(repo)
+
+
+def test_a_failed_record_of_the_session_start_keeps_the_findings(repo, tmp_path, monkeypatch, capsys):
+    audited(repo)
+    monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo), "session_id": "s9"})
+    monkeypatch.setattr(doctor.Path, "home", lambda: make_home(tmp_path))
+    monkeypatch.setattr(doctor, "findings", lambda cwd, home: ["missing PARKED.md"])
+    def broken(self, sid, head):
+        raise OSError("state directory is a symlink")
+    monkeypatch.setattr(State, "session_started", broken)
+    doctor.main([doctor.hookio.stamp()])
+    message = json.loads(capsys.readouterr().out)["systemMessage"]
+    assert "missing PARKED.md" in message and "crashed" not in message

@@ -31,12 +31,14 @@ def evaluate(inp: dict, *, check=run_check, now: float | None = None) -> Outcome
         out = changed_during_run(st, "declaration_denials")
         return Outcome("deny", reason=out.reason) if out.action == "block" else out
     if pending_subagents(str(inp.get("transcript_path") or ""), time.time() if now is None else now):
-        return Outcome("allow")  # another subagent is still writing to the tree
+        st.log(step="unit_check", action="skip", why="subagent")  # another one is still writing to the tree
+        return Outcome("allow")
     s = st.read()
     if s.pop("declaration_denials", None) is not None:
         st.write(s)
     fp = gitutil.fingerprint(root)
     if fp in (s.get("passed_fingerprint"), s.get("check_ok_fingerprint")):
+        st.log(step="unit_check", action="skip", why="passed")
         return Outcome("allow")
     decl = declaration.load(root)
     t0 = time.monotonic()

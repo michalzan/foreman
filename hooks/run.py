@@ -44,7 +44,7 @@ def main(argv: list[str]) -> int:
             print(held + ". Pass this to every subagent you brief.")
         print("\nThe run contract below applies until the run ends.\n\n" + doctor.contract())
     elif args.cmd == "stop":
-        st.end_run()
+        st.end_run("stopped")
         print("run stopped")
     else:
         r = st.run()

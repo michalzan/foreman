@@ -54,6 +54,15 @@ def dirty_files(root: Path) -> list[str]:
     return sorted(names)
 
 
+def newest(root: Path, commits: list[str]) -> str:
+    """The commit among these that all the others lead to, of those HEAD contains; "" when none fits."""
+    def contains(a: str, b: str) -> bool:
+        return subprocess.run(["git", "merge-base", "--is-ancestor", a, b], cwd=root, capture_output=True,
+                              timeout=TIMEOUT).returncode == 0
+    known = [c for c in dict.fromkeys(commits) if c and contains(c, "HEAD")]
+    return next((c for c in known if all(contains(o, c) for o in known)), known[0] if known else "")
+
+
 def changed_files(root: Path, since: str) -> list[str]:
     """Files committed after `since`, plus everything dirty. An unknown `since` counts as none."""
     committed: list[str] = []

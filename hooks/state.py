@@ -54,6 +54,7 @@ class State:
             "start_head": start_head, "session_id": "", "plain": plain,
             "plan_digests": {f: self.plan_digest(f) for f, _ in plans},
         })
+        self.log(step="run", action="start", units=sum(len(u) for _, u in plans), head=start_head)
 
     @staticmethod
     def plan_files(run: dict) -> list[str]:
@@ -79,7 +80,24 @@ class State:
             run["session_id"] = session_id
             self._write("run.json", run)
 
-    def end_run(self) -> None:
+    def session_started(self, session_id: str, head: str) -> None:
+        """Where a session began, so the gates charge it only for what it did (the last 20 sessions are kept).
+        The first start counts: SessionStart fires again after compaction and on resume, with the same id."""
+        s = self.read()
+        sessions = dict(s.get("sessions") or {})
+        if session_id in sessions:
+            return
+        sessions[session_id] = head
+        s["sessions"] = dict(list(sessions.items())[-20:])
+        self.write(s)
+
+    def session_head(self, session_id: str) -> str:
+        return str((self.read().get("sessions") or {}).get(session_id, ""))
+
+    def end_run(self, how: str = "") -> None:
+        """how: complete (the session said so and the judge agreed) or stopped (run.py stop)."""
+        if self.run():
+            self.log(step="run", action="end", how=how)
         (self.dir / "run.json").unlink(missing_ok=True)
 
     def log(self, **event) -> None:

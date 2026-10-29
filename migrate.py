@@ -2,7 +2,7 @@
 
     .harness.toml -> .foreman.toml   (with git mv when tracked)
     .harness/     -> .foreman/       (run state, gitignored)
-    .gitignore:      .harness/ -> .foreman/
+    .gitignore:      .harness/ -> .foreman/, and .harness.toml -> .foreman.toml where it is ignored
 
 The approval does not move with the file: approve .foreman.toml afterwards, as after any change to it.
 usage: uv run --python 3.12 migrate.py [project directory, default: here]
@@ -31,7 +31,8 @@ def _tracked(root: Path, name: str) -> bool:
 def _ignore(root: Path) -> None:
     path = root / ".gitignore"
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
-    renamed = [NEW_DIR + "/" if line.strip() in (OLD_DIR, OLD_DIR + "/") else line for line in lines]
+    new = {OLD_DIR: NEW_DIR + "/", OLD_DIR + "/": NEW_DIR + "/", OLD: NEW}  # a project may ignore the declaration too
+    renamed = [new.get(line.strip(), line) for line in lines]
     if NEW_DIR + "/" not in renamed:
         renamed.append(NEW_DIR + "/")
     path.write_text("\n".join(renamed) + "\n", encoding="utf-8")
@@ -50,14 +51,16 @@ def migrate(start: Path) -> str:
             raise SystemExit(f"{root / name} is a symlink: migrate.py does not write through links. Replace it, then re-run")
     if (root / NEW_DIR).exists():
         raise SystemExit(f"{NEW_DIR}/ already exists in {root}: remove it or move it aside, then re-run")
-    if _tracked(root, OLD):
+    tracked = _tracked(root, OLD)
+    if tracked:
         subprocess.run(["git", "mv", OLD, NEW], cwd=root, check=True, capture_output=True)
     else:
         (root / OLD).rename(root / NEW)
     if (root / OLD_DIR).is_dir():
         (root / OLD_DIR).rename(root / NEW_DIR)
     _ignore(root)
-    return (f"{root}: {OLD} -> {NEW}, {OLD_DIR}/ -> {NEW_DIR}/, .gitignore updated. Commit the rename, then read "
+    commit = "Commit the rename and .gitignore" if tracked else "Commit .gitignore"
+    return (f"{root}: {OLD} -> {NEW}, {OLD_DIR}/ -> {NEW_DIR}/, .gitignore updated. {commit}, then read "
             f"{NEW} and approve it:\n  uv run --no-project --python 3.12 \"{TRUST}\" approve")
 
 

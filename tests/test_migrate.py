@@ -31,6 +31,19 @@ def test_moves_declaration_state_and_ignore_line(old):
     assert "trust.py" in out and "approve" in out
 
 
+def test_an_ignored_declaration_stays_ignored_under_its_new_name(tmp_path):
+    """A project may keep its declaration out of git: the new name must not show up as a file to commit."""
+    root = tmp_path / "p"
+    root.mkdir()
+    sh(root, "git", "init", "-q", "-b", "dev")
+    (root / ".gitignore").write_text(".harness/\n.harness.toml\n")
+    (root / ".harness.toml").write_text(DECL)
+    out = migrate.migrate(root)
+    assert (root / ".gitignore").read_text() == ".foreman/\n.foreman.toml\n"
+    assert sh(root, "git", "status", "--short").strip() == "?? .gitignore"
+    assert "Commit the rename" not in out and "Commit .gitignore" in out
+
+
 def test_works_from_a_subdirectory(old):
     (old / "src").mkdir()
     migrate.migrate(old / "src")

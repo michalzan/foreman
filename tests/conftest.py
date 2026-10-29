@@ -34,6 +34,14 @@ def trust_store(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def launched_with_the_stamp(monkeypatch):
+    """Hooks run as hooks.json launches them: with the stamp of the registrations as their first argument."""
+    import sys
+    import hookio
+    monkeypatch.setattr(sys, "argv", ["hook", hookio.stamp()])
+
+
 def write_decl(root, text):
     """Rewrite the declaration and approve it, as the user would after reviewing a change."""
     import trust

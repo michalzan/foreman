@@ -17,18 +17,28 @@ Decide which single command should be the project check (often `make check`). Tr
 
 ## 3. Prove each gate can fail
 
-For each test suite and each type checker in the proposed check:
+Every gate in the proposed check gets a canary: test suites and type checkers, and also linters, formatter checks, migration checks and docs or site builds. Plant one at a time, because a check often stops at its first failure and would hide the rest.
 
-1. Add a canary that must fail: a test asserting `1 == 2`, or a line with a deliberate type error, in a new file named `foreman_canary` with the suite's extension.
+| Gate | Canary |
+|------|--------|
+| test suite | a test asserting `1 == 2` |
+| type checker | a line with a deliberate type error |
+| linter | an unused import, or another rule the config enforces |
+| formatter check | a few lines in a format it rewrites |
+| migration check | a model change with no migration |
+| docs or site build | a page with a broken link or reference |
+
+1. Put the canary in a new file named `foreman_canary` with the gate's extension, where that gate looks (inside its test paths or include globs). Where only a change to a tracked file can trip the gate, as with most migration checks, pick a file with no uncommitted changes and restore it with `git checkout -- <file>` afterwards.
 2. Run the proposed check command. It must exit non-zero and name the canary.
-3. Delete the canary and confirm `git status` shows no trace of it.
+3. Remove the canary and confirm `git status` shows no trace of it.
 
-A suite whose canary does not turn the check red is a no-op gate. Report it as a gap.
+A gate whose canary does not turn the check red is a no-op gate: report it as a gap. A gate you could not trip without touching something the user would mind is "not proven": say which and why. Never call the check proven while a gate is in neither list nor turned red.
 
 ## 4. Propose
 
 Show the user one list:
 
+- each gate with its canary result: red, no-op, or not proven
 - each gap, and the change that closes it (for example, adding a frontend test target to `check`)
 - the drafted `.foreman.toml`: check command and timeout, working and protected branches, frontend path prefixes, decisions log, parked file
 - anything you left out on purpose and why (a slow suite, for instance)
