@@ -571,7 +571,7 @@ def _is_foreman_file(path: Path, home: Path) -> bool:
     parts = [p.lower() for p in path.parts]
     if ".foreman" in parts:
         below = parts[len(parts) - parts[::-1].index(".foreman"):]
-        if not below or below[0] != "walkthrough":
+        if not below or below[0] not in ("walkthrough", "review"):
             return True
     return name in (declaration.NAME, "foreman-trusted.json")
 

@@ -190,6 +190,15 @@ def test_run_state_is_a_harness_file_for_the_edit_tools(repo, tmp_path):
     assert guard.decide(edit(repo, repo / ".foreman" / "walkthrough" / "x.png", tool="Write"), home=tmp_path) is None
 
 
+def test_the_review_folder_is_free_and_the_gate_files_are_not(repo, tmp_path):
+    review = repo / ".foreman" / "review" / "2026-10-29T12-00-00"
+    assert guard.decide(edit(repo, review / "private.md", tool="Write"), home=tmp_path) is None
+    assert guard.decide(bash(repo, "cat > .foreman/review/2026-10-29T12-00-00/findings.json <<'EOF'\n[]\nEOF"), home=tmp_path) is None
+    for name in (".foreman.toml", ".foreman/state.json", ".foreman/gate.log"):
+        assert guard.decide(edit(repo, repo / name, tool="Write"), home=tmp_path)
+        assert guard.decide(bash(repo, f"cat > {name} <<'EOF'\nx\nEOF"), home=tmp_path)
+
+
 def test_removing_run_state_from_inside_the_state_directory_asks(repo, tmp_path):
     (repo / ".foreman").mkdir(exist_ok=True)
     assert guard.decide(bash(repo / ".foreman", "rm run.json"), home=tmp_path)

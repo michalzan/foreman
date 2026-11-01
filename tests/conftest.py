@@ -76,3 +76,21 @@ def no_tunnels(request, monkeypatch):
     if request.module.__name__ != "test_tunnels":
         import tunnels
         monkeypatch.setattr(tunnels, "warning", lambda run=None: "")
+
+
+def write_transcript(path, entries):
+    """A Claude Code transcript: one JSON object per line."""
+    import json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries))
+
+
+@pytest.fixture
+def cet(monkeypatch):
+    """Local time is UTC+1, as on the machine of the pilot runs; transcripts are in UTC."""
+    import time
+    monkeypatch.setenv("TZ", "CET-1")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()

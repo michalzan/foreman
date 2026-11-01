@@ -1,3 +1,5 @@
+![Foreman: a foreman for unattended Claude Code runs](assets/foreman-social.png)
+
 # Foreman
 
 A foreman for unattended Claude Code runs.
@@ -8,7 +10,7 @@ Claude Code can already do hours of planned work on its own. What stops it is th
 
 Use it when you have a reviewed plan, a project check that fails when something is broken, and work that needs your local machine. Skip it for exploratory work, where the questions are the point.
 
-Status: a personal tool shared as is, under the MIT licence (`LICENSE`). Nine runs so far, about 70 units, all by one person on two projects. Tested with Claude Code 2.1.312; hooks depend on Claude Code's behaviour, so a later version may break something. Issues and ideas are welcome; support is not promised.
+Status: a personal tool shared as is, under the MIT licence (`LICENSE`). Nine runs so far, about 70 units, all by one person on two projects. Runs tested with Claude Code 2.1.312, `/foreman:review` with 2.1.316; hooks depend on Claude Code's behaviour, so a later version may break something. Issues and ideas are welcome; support is not promised.
 
 ---
 
@@ -47,7 +49,7 @@ The scarce resource is your attention, not the model's ability or tokens. The ai
 
 ### What to expect, honestly
 
-- **The evidence is thin.** Seven runs, one person, no control group. So far: every stop-gate block was resolved by the session without help, and the main context grew by about 50k to 80k tokens for 6 to 8 units (about 106k for the 9-unit run). Whether it reduces time at the desk has not been measured yet.
+- **The evidence is thin.** Nine runs, one person, no control group. So far: every stop-gate block was resolved by the session without help, and the main context grew by about 50k to 80k tokens for 6 to 8 units (about 106k for the 9-unit run). Whether it reduces time at the desk has not been measured yet.
 - **Running locally cuts both ways.** The access that makes local runs worth it (tunnels, the real stack) also means no isolation; see "What it does not protect" below.
 - **Parts of it will become redundant** as Claude Code and the models improve. The verification parts (the earned stop, the proven check) should last longest.
 
@@ -64,6 +66,7 @@ The scarce resource is your attention, not the model's ability or tokens. The ai
 | `/foreman:init` skill | Audits a repository's checks, proves each gate can fail (a canary per gate), proposes fixes and writes `.foreman.toml`. |
 | `/foreman:run` skill | Starts a run on one plan, or a chain of plans on stacked branches. Each unit goes to a fresh subagent so the main context stays small. |
 | `/foreman:report` skill | Checks each run in the gate log against what the gates promise and prints a report without content, ready for an issue. |
+| `/foreman:review` skill | Reviews one run from its transcripts on your machine: a private review for you, and a redacted issue for Foreman's maintainer that you read before posting. |
 | Run contract | The rules a session follows during a run (commit per unit, decisions log, parked file, hand-back). It enters the conversation only when a run starts, so sessions without a run never carry it. |
 
 ---
@@ -123,6 +126,8 @@ Run the tests with `uv run pytest`.
 
 5. **Check that Foreman did its job:** `/foreman:report` reads the project's gate log and checks every run against what the gates promise. It checks that the hooks were loaded as installed, that the unit gate decided before every subagent launch, that no gate gave up, that the judge was available, that the check passed at the end, and that the run handed back. The log holds only structure (steps, decisions, durations), and so does the report, so after reading it you can paste it into an [issue](https://github.com/michalzan/foreman/issues).
 
+6. **Find out why a run went the way it did:** `/foreman:review` reads the run's transcripts on your machine and writes two files in `.foreman/review/`: a private review of the run, and an issue about Foreman's behaviour in which commands are reduced to their shape and names the script knows (your project, remote, branches, user, machine) and common secret formats are refused. It costs about 80k tokens for the reviewing subagent. Read `issue.md` before you post it: the script cannot know every name.
+
 Do not `/clear` or re-run `/foreman:init` during a run: `/clear` starts a new session the run is not bound to. Merging into protected branches stays your job.
 
 ---
@@ -144,7 +149,7 @@ Read this before you leave a run alone.
 
     .claude-plugin/   plugin.json (the plugin) and marketplace.json (this repository as a marketplace)
     hooks/            hooks.json, launch.sh (finds uv), the hooks and their shared modules
-    skills/           init and run, invoked as /foreman:init and /foreman:run
+    skills/           init, run, report and review, invoked as /foreman:<name>
     run-contract.md   the rules of a run, printed when a run starts
     uninstall.py      removes the pre-plugin install
     LICENSE           MIT
