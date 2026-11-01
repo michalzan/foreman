@@ -34,6 +34,32 @@ ASK = [
     "sed -ri 's/main/x/' .foreman.toml",
     "gsed -i 's/main/x/' .foreman.toml",
     "perl -pi -e 's/main/x/' .foreman.toml",
+    # however the script is given, the file an in-place edit writes is still seen
+    "sed -i '' -e s/a/b/ .foreman.toml",
+    "sed -i -e 's/a/b/' -e 's/c/d/' .foreman.toml",
+    "sed -i -f edit.sed .foreman.toml",
+    "sed -i --expression=s/a/b/ .foreman.toml",
+    "sed -i --expression s/a/b/ .foreman.toml",
+    "sed -i -es/a/b/ .foreman.toml",
+    "sed -i -- s/a/b/ .foreman.toml",
+    "sed -i.bak s/a/b/ .foreman.toml",
+    "sed -i .bak s/a/b/ .foreman.toml",
+    "sed -i '' s/a/b/ notes.md .foreman.toml",
+    "sed -ie s/a/b/ .foreman.toml",  # -i with the suffix e, not -e
+    "sed -e s/a/b/ -ie .foreman.toml",
+    "perl -i -pe 's/a/b/' .foreman.toml",
+    "perl -pie 's/a/b/' .foreman.toml",  # -i with the suffix e
+    "ruby -pi -e 'x' .foreman.toml",
+    # flags that only look like a script flag must not hide the word after them
+    "perl -Ie -pi .foreman.toml",
+    "perl -I.foreman -pi .foreman.toml",
+    "perl -Mstrict -pi -e 'x' .foreman.toml",
+    "sed -i -l5e .foreman.toml",
+    "sed -i --expr=s/a/b/ .foreman.toml",
+    "sed -i --expr s/a/b/ .foreman.toml",
+    "sed -i -e s/a/b/ -- -e .foreman.toml",
+    "sed -i --fi=edit.sed .foreman.toml",
+    "sed -i 's/../.foreman.toml/g' .gitignore .foreman.toml",
     "echo x | tee -a .foreman.toml",
     # the screenshots folder is not a way into the run state
     "rm .foreman/walkthrough/../state.json",
@@ -58,6 +84,11 @@ PASS = [
     'cd "$(git rev-parse --show-toplevel)" && npm test > /tmp/test.log 2>&1',
     # settings.json files that are not Claude Code's
     "sed -i '' s/a/b/ .vscode/settings.json",
+    # an edit's script is not a path, even when it names one of Foreman's files
+    "sed -i '' 's/^.harness.toml/.foreman.toml/' .gitignore",
+    "sed -i -e 's/.harness.toml/.foreman.toml/' .gitignore",
+    "sed -i 's|.foreman/state.json|x|' notes.md",
+    "perl -pi -e 's/.harness.toml/.foreman.toml/' .gitignore",
     "cp config/settings.json.example config/settings.json",
     # reading Foreman's files, or naming them, is not writing them
     "cat .foreman/gate.log > /tmp/g.txt",

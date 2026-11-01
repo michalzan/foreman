@@ -715,6 +715,16 @@ def _values(args: list[str]) -> list[str]:
             for a in args if not a.startswith("-") or (a.startswith("--") and "=" in a)]
 
 
+# s/a/b/ with its flags. Every other word of an in-place edit counts as a path: telling flags from values is
+# guesswork that can hide the target, and a word of this shape ending in a delimiter or flag is not a file of ours.
+EDIT_SCRIPT = re.compile(r"s([^\w\s])(?:(?!\1).)*\1(?:(?!\1).)*\1[gpimIMe0-9]*", re.S)
+
+
+def _edit_targets(args: list[str]) -> list[str]:
+    """What an in-place edit may write: every operand, less one that can only be a substitution script."""
+    return [a for a in _values(args) if not EDIT_SCRIPT.fullmatch(a) or ".." in a]
+
+
 def _writes(cmd: Simple, g: Git | None, home: Path) -> str | None:
     words = cmd.words
     i = _command_index(words)
@@ -729,7 +739,9 @@ def _writes(cmd: Simple, g: Git | None, home: Path) -> str | None:
     elif name == "find":
         writer = any(a in ("-delete", "-exec", "-execdir", "-ok", "-okdir") for a in args)
     git_writer = g is not None and g.sub in GIT_WRITERS
-    if writer:
+    if writer and name in ("sed", "gsed", "perl", "ruby"):
+        paths += _edit_targets(args)
+    elif writer:
         paths += [a.split("=", 1)[1] if name == "dd" and a.startswith("of=") else a for a in _values(args)]
     elif git_writer:
         paths += _values(g.args)
