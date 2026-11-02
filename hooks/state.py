@@ -80,6 +80,25 @@ class State:
             run["session_id"] = session_id
             self._write("run.json", run)
 
+    def pause_run(self, opening: str, message: str) -> None:
+        """The session handed back to the user: the run waits, and the gates stop treating the talk as unattended work."""
+        run = self.run()
+        if run:
+            run["paused"] = opening
+            run["last_handback"] = message[:500]
+            self._write("run.json", run)
+            self.log(step="run", action="pause", opening=opening)
+
+    def resume_run(self, session_id: str = "") -> None:
+        """The session that resumes a run takes it over."""
+        run = self.run()
+        if run:
+            run.pop("paused", None)
+            if session_id:
+                run["session_id"] = session_id
+            self._write("run.json", run)
+            self.log(step="run", action="resume")
+
     def session_started(self, session_id: str, head: str) -> None:
         """Where a session began, so the gates charge it only for what it did (the last 20 sessions are kept).
         The first start counts: SessionStart fires again after compaction and on resume, with the same id."""

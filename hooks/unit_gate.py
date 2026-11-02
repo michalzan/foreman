@@ -19,6 +19,25 @@ from stop_gate import MAX_ATTEMPTS, Outcome, _park, changed_during_run, pending_
 
 
 def evaluate(inp: dict, *, check=run_check, now: float | None = None) -> Outcome:
+    launch = inp.get("tool_name") in ("Agent", "Task") and not inp.get("agent_id")
+    try:
+        out = _decide(inp, check=check, now=now)
+    except Exception:  # main fails open, so the subagent starts anyway: its work must not run paused
+        if launch:
+            _resume(inp)
+        raise
+    if launch and out.action == "allow":
+        _resume(inp)
+    return out
+
+
+def _resume(inp: dict) -> None:
+    root = declaration.find_root(Path(inp.get("cwd") or os.getcwd()))
+    if root is not None and (run := State(root).run()) and run.get("paused"):
+        State(root).resume_run(inp.get("session_id", ""))  # the launch is the user's go-ahead: the gates are back on
+
+
+def _decide(inp: dict, *, check, now: float | None) -> Outcome:
     if inp.get("tool_name") not in ("Agent", "Task") or inp.get("agent_id"):
         return Outcome("allow")  # not a launch, or a subagent's own subagents, which work inside its unit
     root = declaration.find_root(Path(inp.get("cwd") or os.getcwd()))

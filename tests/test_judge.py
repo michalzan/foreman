@@ -81,3 +81,34 @@ def test_without_background_commands_the_prompt_says_nothing_about_them():
     out = json.dumps({"structured_output": {"legitimate": True, "why": "ok"}})
     judge.ask("Run complete: done.", RUN, runner=fake(out, seen))
     assert "STILL RUNNING" not in seen["input"]
+
+
+def test_the_judge_sees_commits_and_the_last_hand_back():
+    seen = {}
+    out = json.dumps({"structured_output": {"legitimate": True, "why": "ok"}})
+    judge.ask("msg", {**RUN, "last_handback": "Blocked on you: VPN"}, commits=["U1: add x"],
+              runner=fake(out, seen))
+    assert "COMMITS SINCE THE RUN STARTED:\n- U1: add x" in seen["input"]
+    assert "LAST HAND-BACK:\nBlocked on you: VPN" in seen["input"]
+
+
+def test_a_commit_subject_is_cut_to_200_characters():
+    seen = {}
+    out = json.dumps({"structured_output": {"legitimate": True, "why": "ok"}})
+    judge.ask("msg", RUN, commits=["x" * 300], runner=fake(out, seen))
+    assert "- " + "x" * 200 + "\n" in seen["input"] + "\n" and "x" * 201 not in seen["input"]
+
+
+def test_without_commits_or_a_hand_back_the_sections_are_absent():
+    seen = {}
+    out = json.dumps({"structured_output": {"legitimate": True, "why": "ok"}})
+    judge.ask("msg", RUN, runner=fake(out, seen))
+    assert "COMMITS SINCE" not in seen["input"] and "LAST HAND-BACK" not in seen["input"]
+
+
+def test_the_system_prompt_says_a_listed_unit_is_not_necessarily_unfinished():
+    assert "may be finished" in judge.SYSTEM
+
+
+def test_the_judge_is_told_what_the_last_hand_back_means():
+    assert "LAST HAND-BACK" in judge.SYSTEM

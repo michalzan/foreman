@@ -13,6 +13,8 @@ To pick a run by time, for example: `... review.py digest --since 2026-10-28T21:
 
 It prints the digest's path and size, or why there is no run to review. If there is none, say so and stop. Do not read the transcripts or the digest yourself.
 
+If it prints `run paused`, tell the user: "A run is paused at a hand-back. This review launches a subagent, and that resumes the run: the judge and the resume gate come back on until the next hand-back, and a review from a different session than the run's also takes the run over. Do you want to continue with the review?" Wait for the answer. If they say no, stop. If they say yes, go on.
+
 If it prints `run still open`, tell the user that a review launches a subagent, which the unit gate checks, and that a stop may go to the judge, and ask before going on.
 
 Start one subagent (general-purpose) with the brief below, with `<dir>` replaced by the folder that holds `digest.txt` and `<plugin>` by `${CLAUDE_PLUGIN_ROOT}`. Wait for its report.

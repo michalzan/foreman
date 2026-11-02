@@ -1,7 +1,7 @@
 {
   "name": "foreman",
   "displayName": "Foreman",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Supervises unattended Claude Code runs: the session works through a reviewed plan and may only stop when the work is checked or it genuinely needs you. Adds /foreman:init, /foreman:run, /foreman:report and /foreman:review.",
   "author": {"name": "Michal Zan"},
   "license": "MIT"

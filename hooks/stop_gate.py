@@ -37,7 +37,7 @@ class Outcome:
 
 def run_check(decl: declaration.Declaration) -> tuple[bool, str]:
     proc = subprocess.Popen(
-        decl.check_command, shell=True, cwd=decl.root, text=True,
+        decl.check_command, shell=True, cwd=decl.root, encoding="utf-8", errors="replace",
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
     )
     try:
@@ -62,7 +62,7 @@ def _park(decl: declaration.Declaration, title: str, detail: str) -> bool:
     try:
         fd = os.open(decl.root / decl.parked,
                      os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
+        with os.fdopen(fd, "a", encoding="utf-8", errors="surrogateescape") as f:
             f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')} {title}\n\n```\n{detail}\n```\n")
         return True
     except OSError:
@@ -201,7 +201,8 @@ def _stale(inp: dict, now: float) -> Outcome | None:
     if root is None or not trust.is_trusted(root) or not gitutil.is_toplevel(root):
         return None
     st = State(root)
-    if not st.run():
+    run = st.run()
+    if not run or run.get("paused"):
         st.log(step="hooks", action="stale")
         return None
     if _opening(str(inp.get("last_assistant_message") or "")) in ("blocked", "decision") or running_subagents(inp, now):
@@ -239,7 +240,8 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
             "for this project. Read it, then approve it with trust.py."))
         st = State(root)
         message = str(inp.get("last_assistant_message") or "").lstrip().lower()
-        if not st.run() or message.startswith(("blocked on you", "decision needed")):
+        run = st.run()
+        if not run or run.get("paused") or message.startswith(("blocked on you", "decision needed")):
             return unapproved
         if running_subagents(inp, time.time() if now is None else now):  # a wait; the stop after the report holds
             return unapproved
@@ -262,6 +264,9 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
     head_now = gitutil.head(root)
     if counts.get("judge_head") != head_now:
         counts.pop("judge", None)  # a commit landed since the last nudge: the run is progressing
+    message = str(inp.get("last_assistant_message") or "")
+    opening = _opening(message)
+    handing_back = opening in ("blocked", "decision")
 
     def fail(step: str, reason: str) -> Outcome:
         if counts.get(step, 0) >= MAX_ATTEMPTS:
@@ -271,6 +276,12 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
             recorded = (f"Recorded in {decl.parked}." if _park(decl, title, reason) else
                         f"It could not be recorded in {decl.parked} (a symlink, or outside the project).")
             st.log(step=step, action="gave_up")
+            run = st.run()
+            # A hand-back the judge refused is not one: no pause and no stop row, so the report does not count it.
+            if step != "judge" and handing_back and run and run.get("session_id") in ("", sid):
+                st.bind_run(sid)
+                st.pause_run(opening, message)
+                st.log(step="stop", action="allow", opening=opening)
             return Outcome("allow", warning=(
                 f"foreman: {title} after {MAX_ATTEMPTS} attempts. {recorded}\n{reason}"))
         counts[step] = counts.get(step, 0) + 1
@@ -308,7 +319,7 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
                 "Frontend files changed: " + ", ".join(frontend[:10]) + ". "
                 "Open each changed screen in a browser, confirm it works, and save a "
                 "screenshot as .foreman/walkthrough/<name>.png before you stop."))
-        if run:
+        if run and not run.get("paused"):
             plans = State.plan_files(run)
             changed = gitutil.changed_files(root, since)
             digests = run.get("plan_digests", {})
@@ -326,25 +337,32 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
 
     st.bind_run(sid)
     run = st.run()
-    if run and run.get("session_id") == sid:
-        message = str(inp.get("last_assistant_message") or "")
+    owner = bool(run) and run.get("session_id") == sid
+    if owner and (not run.get("paused") or opening == "complete"):
         try:
-            v = ask(message, run, last_user_prompt(str(inp.get("transcript_path") or "")), running_commands(inp))
+            v = ask(message, run, last_user_prompt(str(inp.get("transcript_path") or "")), running_commands(inp),
+                    gitutil.subjects(root, run.get("start_head", "")))
         except judge.JudgeUnavailable as e:
             st.log(step="judge", action="unavailable")
+            if handing_back:
+                st.pause_run(opening, message)
+            st.log(step="stop", action="allow", opening=opening)
             return Outcome("allow", warning=f"foreman: judge unavailable ({e}); this stop was not judged")
         if not v.legitimate:
             return fail("judge", (
                 f"A run is active ({', '.join(run['units'])}). {v.why} "
-                "Do not stop for sequencing or housekeeping: follow the plan's order, commit, "
-                "push the working branch and continue with the next unblocked unit. "
+                "Do not stop for sequencing or housekeeping: follow the plan and continue with the next unblocked unit. "
                 "If you must stop, open with 'Decision needed:', 'Blocked on you:' or 'Run complete:'."))
-        if message.lstrip().lower().startswith("run complete"):
+        st.log(step="judge", action="allow")
+        if opening == "complete":
             st.end_run("complete")
+        elif handing_back:
+            st.pause_run(opening, message)
+    elif owner and handing_back:  # a later hand-back while paused: not judged, but it is what the user was last asked
+        st.pause_run(opening, message)
 
     _save_counts(st, sid, {})
-    st.log(step="stop", action="allow", **({"opening": _opening(str(inp.get("last_assistant_message") or ""))}
-                                           if run else {}))
+    st.log(step="stop", action="allow", **({"opening": opening} if run else {}))
     return Outcome("allow")
 
 

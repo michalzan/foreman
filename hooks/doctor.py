@@ -89,8 +89,9 @@ def findings(cwd: Path, home: Path, plugin_root: Path = PLUGIN_ROOT) -> list[str
     run = State(root).run()
     if run:
         out.append(run_line(run))
-        out.append(f"continue from the resume point in {', then '.join(State.plan_files(run))}; "
-                   f"decisions so far are in {decl.decisions_log}, parked questions in {decl.parked}")
+        if not run.get("paused"):
+            out.append(f"continue from the resume point in {', then '.join(State.plan_files(run))}; "
+                       f"decisions so far are in {decl.decisions_log}, parked questions in {decl.parked}")
         held = tunnels.warning()
         if held:
             out.append(held)
@@ -108,7 +109,8 @@ def contract() -> str:
 def run_line(run: dict) -> str:
     plans = run.get("plans") or [{"file": run["plan_file"], "units": run["units"]}]
     parts = [f"{', '.join(p['units'])} ({p['file']})" for p in plans]
-    return ("run active: " + "; then ".join(parts)
+    return ("run active" + (" (paused at a hand-back; the next subagent launch resumes it)" if run.get("paused") else "")
+            + ": " + "; then ".join(parts)
             + (", plain: skip the simplify pass" if run.get("plain") else ""))
 
 

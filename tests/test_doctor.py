@@ -226,3 +226,11 @@ def test_a_failed_record_of_the_session_start_keeps_the_findings(repo, tmp_path,
     doctor.main([doctor.hookio.stamp()])
     message = json.loads(capsys.readouterr().out)["systemMessage"]
     assert "missing PARKED.md" in message and "crashed" not in message
+
+
+def test_a_paused_run_says_the_next_launch_resumes_it(repo, tmp_path):
+    st = State(audited(repo))
+    st.start_run([("PLAN.md", ["W8"])], "")
+    st.pause_run("blocked", "msg")
+    out = doctor.findings(repo, make_home(tmp_path))
+    assert out == ["run active (paused at a hand-back; the next subagent launch resumes it): W8 (PLAN.md)"]

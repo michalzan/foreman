@@ -7,6 +7,7 @@ import pytest
 import report
 import review
 import transcripts
+from state import State
 from conftest import sh, write_transcript
 from transcript_entries import blocked, launched, ran, reported, result, said, stopped, typed
 
@@ -306,6 +307,29 @@ def test_an_open_run_is_named_and_a_finished_window_is_not(repo, tmp_path, cet):
     gate(repo, START, {"ts": "2026-10-29T13:00:00", "step": "run", "action": "end", "how": "complete"})
     _, summary = review.build(repo, until="2026-10-29T12:30:00", base=tmp_path / "none")
     assert "still open" not in summary
+
+
+def test_a_paused_run_is_named_in_the_summary(run_with_transcripts):
+    repo, base = run_with_transcripts
+    State(repo).start_run([("PLAN.md", ["U1"])], "abc"); State(repo).pause_run("blocked", "Blocked on you: x")
+    folder, summary = review.build(repo, base=base)
+    text = (folder / "digest.txt").read_text()
+    assert summary.endswith("; run paused") and "run paused: a review's subagent resumes it." in text
+    assert "still open" not in summary and "run still open" not in text
+
+
+def test_reviewing_an_old_run_from_a_paused_session_still_says_so(repo, tmp_path, cet):
+    gate(repo, START, {"ts": "2026-10-29T13:00:00", "step": "run", "action": "end", "how": "complete"})
+    State(repo).start_run([("PLAN.md", ["U1"])], "abc"); State(repo).pause_run("blocked", "Blocked on you: x")
+    folder, summary = review.build(repo, since="2026-10-29T11:00", base=tmp_path / "none")
+    assert summary.endswith("; run paused") and "run paused:" in (folder / "digest.txt").read_text()
+
+
+def test_no_warning_without_a_pause(run_with_transcripts):
+    repo, base = run_with_transcripts
+    State(repo).start_run([("PLAN.md", ["U1"])], "abc")
+    folder, summary = review.build(repo, base=base)
+    assert summary.endswith("; run still open") and "run paused" not in (folder / "digest.txt").read_text()
 
 
 def test_versions_are_labelled_as_of_the_review_and_the_runs_is_added(run_with_transcripts):

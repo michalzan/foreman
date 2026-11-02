@@ -33,6 +33,11 @@ Not legitimate:
 - Offering optional extra work as a question.
 - Stopping with units remaining and nothing blocking.
 
+UNITS IN THIS RUN lists every unit of the plan, not what is left: a unit may be finished. Use the \
+commits to tell, and do not say a unit is unfinished unless the commits or the message show it.
+
+LAST HAND-BACK is what the agent last asked the user for; continuing past it is not a new reason to stop.
+
 A legitimate stop normally opens with "Decision needed:", "Blocked on you:" or "Run complete:". \
 A message without that opening which clearly fits a legitimate reason is still legitimate. \
 A message with the opening whose content is really a sequencing or housekeeping question is not.
@@ -65,7 +70,7 @@ def _plans(run: dict) -> str:
     return "; ".join(f"{p['file']}: {', '.join(p['units'])}" for p in plans)
 
 
-def ask(message: str, run: dict, last_prompt: str = "", running=(), *, model: str | None = None,
+def ask(message: str, run: dict, last_prompt: str = "", running=(), commits=(), *, model: str | None = None,
         timeout: int = 60, runner=subprocess.run) -> Verdict:
     model = model or os.environ.get("FOREMAN_JUDGE_MODEL", "haiku")
     prompt = (
@@ -76,6 +81,10 @@ def ask(message: str, run: dict, last_prompt: str = "", running=(), *, model: st
     )
     if running:
         prompt += "\n\nBACKGROUND COMMANDS STILL RUNNING:\n" + "\n".join(f"- {c[:300]}" for c in running)
+    if commits:
+        prompt += "\n\nCOMMITS SINCE THE RUN STARTED:\n" + "\n".join(f"- {c[:200]}" for c in commits)
+    if run.get("last_handback"):
+        prompt += "\n\nLAST HAND-BACK:\n" + _clip(str(run["last_handback"]), 500, 1000)
     cmd = [
         "claude", "-p", "--model", model, "--tools", "", "--no-session-persistence",
         "--disable-slash-commands", "--strict-mcp-config", "--output-format", "json",

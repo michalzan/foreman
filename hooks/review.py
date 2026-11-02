@@ -22,6 +22,7 @@ import declaration
 import redact
 import report
 import transcripts
+from state import State
 
 POLL = re.compile(r"\b(?:while|until|for)\b[^\n]*?;\s*do\b[\s\S]*?\bsleep\b|\bsleep\s+(?:[3-9]\d|\d{3,})\b|select\(\s*undef")
 LONG_SECONDS = 300
@@ -190,6 +191,7 @@ def build(root: Path, since: str = "", until: str = "", base: Path | None = None
     how = next((e.get("how") for e in run if e.get("step") == "run" and e.get("action") == "end"), "") or "still open"
     still_open = marked and not any(e.get("step") == "run" and e.get("action") == "end" and str(e.get("ts")) >= start
                                     for e in log)
+    paused = bool((State(root).run() or {}).get("paused"))  # whichever run is under review
     used = sorted({str(e.data["version"]) for e in entries if VERSION.fullmatch(str(e.data.get("version")))})
     installed = f"foreman {v['foreman']}, Claude Code {v['claude']}, {v['os']} at review time" + (
         f"; the run used Claude Code {', '.join(used)}" if used else "")
@@ -204,7 +206,9 @@ def build(root: Path, since: str = "", until: str = "", base: Path | None = None
         f"guard replay: {_safe(_line(replay_note))}",
         "The replay uses today's branch and tree, not the run's: a branch-dependent push is not evidence on its own.",
     ]
-    if still_open:
+    if paused:
+        head.append("run paused: a review's subagent resumes it.")
+    elif still_open:
         head.append("run still open: no end marker in the gate log.")
     if not entries:
         head.append("NO TRANSCRIPTS in this window (Claude Code deletes them after cleanupPeriodDays): "
@@ -232,7 +236,7 @@ def build(root: Path, since: str = "", until: str = "", base: Path | None = None
         report_lines.append("  NO TRANSCRIPTS in this window: this review rests on the gate log alone.")
     (folder / "report.txt").write_text("\n".join(report_lines) + "\n", encoding="utf-8")
     return folder, (f"{len(lines)} timeline lines, about {sum(map(len, body)) // 4000 + 1}k tokens"
-                    + ("; run still open" if still_open else ""))
+                    + ("; run paused" if paused else "; run still open" if still_open else ""))
 
 
 def excerpt(folder: Path, eid: str, around: int = 3, width: int = 400) -> str:

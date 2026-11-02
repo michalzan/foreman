@@ -92,3 +92,18 @@ def test_an_old_log_does_not_claim_what_it_cannot_show():
     [run] = report.runs(rows(LAUNCH("a1"), CHECKED))
     assert [status for status, line in report.invariants(run) if line.startswith(("hooks", "unit gate", "hand-back"))] \
         == ["?", "?", "?"]
+
+
+def test_a_run_ending_paused_has_handed_back():
+    run = rows(START, {"step": "stop", "action": "allow", "opening": "blocked"},
+               {"step": "run", "action": "pause", "opening": "blocked"},
+               {"step": "check", "ok": True}, {"step": "stop", "action": "allow", "opening": "other"})
+    assert ("ok", "hand-back: blocked") in report.invariants(report.runs(run)[0])
+
+
+def test_a_run_resumed_after_a_hand_back_must_hand_back_again():
+    run = rows(START, {"step": "stop", "action": "allow", "opening": "blocked"},
+               {"step": "run", "action": "pause", "opening": "blocked"},
+               {"step": "run", "action": "resume"}, LAUNCH("a1"),
+               {"step": "stop", "action": "allow", "opening": "other"})
+    assert "no hand-back: the log ends without Run complete, Blocked on you or Decision needed" in problems(run)

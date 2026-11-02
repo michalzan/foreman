@@ -7,11 +7,14 @@ import io
 import json
 import sys
 
+import pytest
+
+import stop_gate
 import unit_gate
-from conftest import DECL, write_decl
+from conftest import DECL, stage_bad_name, write_decl
 from state import State
 
-from test_stop_gate import NOW, launched, transcript
+from test_stop_gate import BAD_BYTES, NOW, launched, transcript, verdict
 
 
 def inp(root, **kw):
@@ -198,3 +201,136 @@ def test_a_skip_while_a_subagent_works_is_logged(repo, tmp_path):
     t = transcript(tmp_path, launched("a8278cc01bf5e8bd8"))
     unit_gate.evaluate(inp(repo, transcript_path=t), check=boom, now=NOW)
     assert {"step": "unit_check", "action": "skip", "why": "subagent"}.items() <= events(repo)[-1].items()
+
+
+def paused(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "msg")
+
+
+def test_a_launch_resumes_a_paused_run(repo):
+    paused(repo)
+    assert unit_gate.evaluate(inp(repo), check=passing([]), now=NOW).action == "allow"
+    assert "paused" not in State(repo).run()
+    assert '"action": "resume"' in (repo / ".foreman" / "gate.log").read_text()
+
+
+def test_a_denied_launch_does_not_resume(repo):
+    paused(repo)
+    (repo / "a.py").write_text("x")
+    assert unit_gate.evaluate(inp(repo), check=failing, now=NOW).action == "deny"
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def test_a_subagents_subagent_does_not_resume(repo):
+    paused(repo)
+    assert unit_gate.evaluate(inp(repo, agent_id="a1"), check=boom, now=NOW).action == "allow"
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def test_a_launch_while_another_runs_resumes(repo, tmp_path):
+    paused(repo)
+    t = transcript(tmp_path, launched("a1"))
+    assert unit_gate.evaluate(inp(repo, transcript_path=t), check=boom, now=NOW).action == "allow"
+    assert "paused" not in State(repo).run()
+
+
+def crashing_decide(monkeypatch):
+    def crash(*a, **k):
+        raise RuntimeError("gate broke")
+    monkeypatch.setattr(unit_gate, "_decide", crash)
+
+
+def test_a_crash_in_the_gate_still_resumes_and_is_raised(repo, monkeypatch):
+    """main fails open, so the subagent starts: its work must not run paused."""
+    paused(repo)
+    crashing_decide(monkeypatch)
+    with pytest.raises(RuntimeError, match="gate broke"):
+        unit_gate.evaluate(inp(repo, session_id="s2"), check=boom, now=NOW)
+    run = State(repo).run()
+    assert "paused" not in run and run["session_id"] == "s2"
+
+
+@pytest.mark.parametrize("not_a_launch", [{"agent_id": "a1"}, {"tool_name": "TaskOutput"}])
+def test_a_crash_on_anything_but_a_launch_does_not_resume(repo, monkeypatch, not_a_launch):
+    paused(repo)
+    crashing_decide(monkeypatch)
+    with pytest.raises(RuntimeError):
+        unit_gate.evaluate(inp(repo, **not_a_launch), check=boom, now=NOW)
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def test_a_staged_name_that_is_not_utf8_takes_a_launch_through_the_normal_path(repo):
+    start_run(repo)
+    stage_bad_name(repo)
+    calls = []
+    assert unit_gate.evaluate(inp(repo), check=passing(calls), now=NOW).action == "allow"
+    assert calls == [1]
+
+
+def test_a_gave_up_allow_resumes(repo):
+    paused(repo)
+    (repo / "a.py").write_text("x")
+    for _ in range(3):
+        assert unit_gate.evaluate(inp(repo), check=failing, now=NOW).action == "deny"
+    assert State(repo).run()["paused"] == "blocked"
+    assert unit_gate.evaluate(inp(repo), check=failing, now=NOW).action == "allow"
+    assert "paused" not in State(repo).run()
+
+
+def test_a_changed_declaration_still_refuses_the_launch_that_would_resume(repo):
+    paused(repo)
+    (repo / ".foreman.toml").write_text(DECL + "\n# changed\n")
+    assert unit_gate.evaluate(inp(repo), check=boom, now=NOW).action == "deny"
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def ok(decl):
+    return True, ""
+
+
+def stop(repo, session_id, message, ask):
+    return stop_gate.evaluate({"cwd": str(repo), "session_id": session_id, "stop_hook_active": False,
+                               "last_assistant_message": message}, check=ok, ask=ask)
+
+
+def taken_over_by_s2(repo):
+    start_run(repo)
+    stop(repo, "s1", "Blocked on you: the VPN.", verdict(True))
+    assert State(repo).run()["session_id"] == "s1"
+    unit_gate.evaluate(inp(repo, session_id="s2"), check=boom, now=NOW)
+    assert State(repo).run()["session_id"] == "s2"
+
+
+def test_the_session_that_resumes_a_run_is_judged(repo):
+    taken_over_by_s2(repo)
+    seen = {}
+    assert stop(repo, "s2", "W9 or the UI next?", verdict(False, seen)).action == "block"
+    assert seen["message"] == "W9 or the UI next?"
+
+
+def test_the_session_that_resumes_a_run_can_pause_it(repo):
+    taken_over_by_s2(repo)
+    assert stop(repo, "s2", "Blocked on you: the login.", verdict(True)).action == "allow"
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def test_the_session_that_resumes_a_run_can_end_it(repo):
+    taken_over_by_s2(repo)
+    assert stop(repo, "s2", "Run complete: W8, W9.", verdict(True)).action == "allow"
+    assert State(repo).run() is None
+
+
+def test_a_launch_from_another_session_does_not_take_an_active_run(repo):
+    start_run(repo)
+    State(repo).bind_run("s1")
+    unit_gate.evaluate(inp(repo, session_id="s2"), check=ok, now=NOW)
+    assert State(repo).run()["session_id"] == "s1"
+
+
+def test_a_failing_check_that_prints_non_utf8_bytes_denies_the_launch(repo):
+    start_run(repo)
+    write_decl(repo, DECL.replace('command = "true"', BAD_BYTES.format(1)))
+    (repo / "a.py").write_text("x")
+    out = unit_gate.evaluate(inp(repo), now=NOW)
+    assert out.action == "deny" and "bad \ufffd byte" in out.reason

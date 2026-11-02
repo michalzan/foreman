@@ -33,7 +33,7 @@ def must_not_run(decl):
     raise AssertionError("check ran")
 
 
-def nudge(message, run, last_prompt="", running=()):
+def nudge(message, run, last_prompt="", running=(), commits=()):
     return judge.Verdict(False, "Carry on.")
 
 

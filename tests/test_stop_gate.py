@@ -2,8 +2,12 @@ import io
 import json
 import sys
 
+import pytest
+
+import gitutil
+import report
 import stop_gate
-from conftest import DECL, sh, write_decl
+from conftest import DECL, raw_commit, sh, stage_bad_name, write_decl
 from state import State
 
 
@@ -231,9 +235,9 @@ import judge
 
 
 def verdict(legit, seen=None):
-    def ask(message, run, last_prompt="", running=()):
+    def ask(message, run, last_prompt="", running=(), commits=()):
         if seen is not None:
-            seen.update(message=message, last_prompt=last_prompt, running=list(running))
+            seen.update(message=message, last_prompt=last_prompt, running=list(running), commits=list(commits))
         return judge.Verdict(legit, "Pick the next unit yourself.")
     return ask
 
@@ -604,3 +608,339 @@ def test_rewritten_history_still_counts_the_frontend_commits(repo):
     sh(repo, "git", "commit", "-q", "--amend", "-m", "a and b")
     out = stop_gate.evaluate(inp(repo), check=passing([]))
     assert out.action == "block" and "frontend/src/b.tsx" in out.reason
+
+
+# A hand-back pauses the run: the conversation that follows is not unattended work.
+
+def _events(repo):
+    return [json.loads(x) for x in (repo / ".foreman" / "gate.log").read_text().splitlines()]
+
+
+def test_a_hand_back_pauses_the_run(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN."), check=ok, ask=verdict(True))
+    assert State(repo).run()["paused"] == "blocked"
+
+
+def test_a_hand_back_the_judge_refuses_does_not_pause(repo):
+    start_run(repo)
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: which next?"), check=ok, ask=verdict(False))
+    assert out.action == "block" and "paused" not in State(repo).run()
+
+
+def test_a_hand_back_pauses_when_the_judge_is_unavailable(repo):
+    start_run(repo)
+
+    def down(*a, **k):
+        raise judge.JudgeUnavailable("timeout")
+
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Decision needed: A or B?"), check=ok, ask=down)
+    assert out.action == "allow" and "judge unavailable" in out.warning
+    assert State(repo).run()["paused"] == "decision"
+
+
+def test_a_paused_run_is_not_judged(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+
+    def never(*a):
+        raise AssertionError("judged")
+
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Which of these two?"), check=ok, ask=never)
+    assert out.action == "allow"
+
+
+def start_run_at_a_commit(repo):
+    """The plan is committed before the run starts, so a later commit moves the head and not the plan."""
+    (repo / "PLAN.md").write_text("resume: W8\n")
+    sh(repo, "git", "add", "PLAN.md")
+    sh(repo, "git", "commit", "-q", "-m", "plan")
+    State(repo).start_run([("PLAN.md", ["W8", "W9"])], gitutil.head(repo))
+
+
+def commit_only(repo, name, subject):
+    (repo / name).write_text("x")
+    sh(repo, "git", "add", name)
+    sh(repo, "git", "commit", "-q", "-m", subject)
+
+
+def test_a_commit_while_paused_needs_no_resume_point(repo):
+    start_run_at_a_commit(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    commit_only(repo, "a.py", "x")
+    out = stop_gate.evaluate(inp(repo), check=ok, ask=verdict(False))
+    assert out.action == "allow"
+    assert "resume" not in (repo / ".foreman" / "gate.log").read_text()
+
+
+def test_the_same_commit_needs_a_resume_point_when_not_paused(repo):
+    """The control: this set-up does reach the resume gate, so the test above is about the pause."""
+    start_run_at_a_commit(repo)
+    commit_only(repo, "a.py", "x")
+    out = stop_gate.evaluate(inp(repo), check=ok, ask=verdict(True))
+    assert out.action == "block" and "PLAN.md" in out.reason
+
+
+def test_a_failing_check_still_holds_a_paused_run(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    (repo / "a.py").write_text("x")
+    assert stop_gate.evaluate(inp(repo), check=failing, ask=verdict(True)).action == "block"
+
+
+def test_run_complete_ends_a_paused_run(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: all done"), check=ok, ask=verdict(True))
+    assert out.action == "allow" and State(repo).run() is None
+
+
+def test_stale_hooks_do_not_hold_a_paused_run(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="carrying on"), stale=True, check=ok, ask=boom)
+    assert out.action == "allow" and "foreman:" in out.warning
+
+
+def test_every_verdict_is_logged(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Decision needed: A or B?"), check=ok, ask=verdict(True))
+    assert {"step": "judge", "action": "allow"}.items() <= next(e for e in _events(repo) if e["step"] == "judge").items()
+
+
+def test_the_block_text_does_not_tell_the_session_to_push(repo):
+    start_run(repo)
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="shall I go on?"), check=ok, ask=verdict(False))
+    assert "push" not in out.reason.lower() and "Run complete:" in out.reason
+
+
+def test_the_stop_gate_passes_the_commits_since_the_run_started(repo):
+    start = gitutil.head(repo)
+    (repo / "PLAN.md").write_text("resume: W8\n")
+    State(repo).start_run([("PLAN.md", ["W8", "W9"])], start)
+    (repo / "w8.txt").write_text("w8")
+    sh(repo, "git", "add", "w8.txt")
+    sh(repo, "git", "commit", "-qm", "W8: add w8")
+    seen = {}
+    stop_gate.evaluate(inp(repo, last_assistant_message="W9 or the UI next?"), check=ok, ask=verdict(True, seen))
+    assert seen["commits"] == ["W8: add w8"]
+
+
+def test_a_non_utf8_commit_subject_does_not_stop_the_judge(repo):
+    start = gitutil.head(repo)
+    (repo / "PLAN.md").write_text("resume: W8\n")
+    State(repo).start_run([("PLAN.md", ["W8", "W9"])], start)
+    raw_commit(repo, b"W8: bad \xff byte")
+    seen = {}
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="W9 or the UI next?"), check=ok,
+                             ask=verdict(False, seen))
+    assert out.action == "block" and seen["commits"] == ["W8: bad \ufffd byte"]
+
+
+def _judged_only_at_the_ends(judged):
+    """The judge of the replay: it answers the first hand-back and the closing message, and raises on any other stop."""
+    def ask(message, *a, **k):
+        if message.startswith("Blocked on you: the VPN") or message.startswith("Run complete:"):
+            judged.append(message)
+            return judge.Verdict(True, "")
+        raise AssertionError(f"judged: {message}")
+    return ask
+
+
+def test_the_hand_back_sequence_of_a_real_run(repo):
+    """The sequence from a real run's gate log: a hand-back, talk, a commit, more hand-backs, the end."""
+    start_run_at_a_commit(repo)
+    judged = []
+    ask = _judged_only_at_the_ends(judged)
+
+    def stop(message):
+        return stop_gate.evaluate(inp(repo, last_assistant_message=message), check=ok, ask=ask)
+
+    assert stop("Blocked on you: the VPN is down.").action == "allow"
+    assert State(repo).run()["paused"] == "blocked"
+    assert stop("It was the token, now rotated.").action == "allow"
+    assert stop("Which of the two do you prefer?").action == "allow"
+    commit_only(repo, "notes.txt", "record the ruling")
+    assert stop("Committed.").action == "allow"
+    assert "resume" not in (repo / ".foreman" / "gate.log").read_text()
+    assert stop("Blocked on you: the staging login.").action == "allow"
+    assert stop("Blocked on you: the staging login again.").action == "allow"
+    assert State(repo).run() is not None and len(judged) == 1
+    assert stop("Run complete: W8, W9 done.").action == "allow"
+    assert State(repo).run() is None and len(judged) == 2
+
+
+def test_a_launch_during_that_sequence_brings_the_gates_back(repo):
+    start_run(repo)
+    ask = _judged_only_at_the_ends([])
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN is down."), check=ok, ask=ask)
+    stop_gate.evaluate(inp(repo, last_assistant_message="It was the token."), check=ok, ask=ask)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Which of the two?"), check=ok, ask=ask)
+    assert State(repo).run()["paused"] == "blocked"
+    import unit_gate
+    unit_gate.evaluate({"cwd": str(repo), "session_id": "s1", "tool_name": "Agent"}, check=ok, now=NOW)
+    assert "paused" not in State(repo).run()
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="W9 or the UI next?"), check=ok, ask=verdict(False))
+    assert out.action == "block"
+
+
+def test_a_staged_name_that_is_not_utf8_takes_a_stop_through_the_normal_path(repo):
+    start_run(repo)
+    stage_bad_name(repo)
+    calls = []
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="W9 or the UI next?"), check=passing(calls),
+                             ask=verdict(False))
+    assert calls == [1] and out.action == "block" and "Pick the next unit yourself." in out.reason
+
+
+def test_a_name_that_is_not_utf8_can_be_parked(repo):
+    decl = stop_gate.declaration.load(repo)
+    assert stop_gate._park(decl, "GATE NOT SATISFIED", "bad\udcff.tsx")
+    assert b"bad\xff.tsx" in (repo / "PARKED.md").read_bytes()
+
+
+def test_a_changed_declaration_does_not_hold_a_paused_conversation(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    changed(repo)
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="It was the token."), check=boom, ask=boom, now=NOW)
+    assert out.action == "allow" and "not approved" in out.warning
+    assert not any(e["step"] == "declaration" for e in _events(repo))
+
+
+def hand_back_status(repo):
+    [run] = report.runs(report.read_log(repo))
+    return next(row for row in report.invariants(run) if "hand-back" in row[1])
+
+
+def test_a_hand_back_with_the_judge_unavailable_is_reported(repo):
+    start_run(repo)
+
+    def down(*a, **k):
+        raise judge.JudgeUnavailable("timeout")
+
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN."), check=ok, ask=down)
+    assert hand_back_status(repo) == ("ok", "hand-back: blocked")
+
+
+def give_up_on_the_check(repo, message, session_id="s1"):
+    (repo / "a.py").write_text("x")
+    stops = [inp(repo, last_assistant_message=message, session_id=session_id, stop_hook_active=active)
+             for active in (False, True, True)]
+    for stop in stops:
+        assert stop_gate.evaluate(stop, check=failing, ask=boom).action == "block"
+    return stop_gate.evaluate(stops[-1], check=failing, ask=boom)
+
+
+def test_a_hand_back_after_three_failed_checks_pauses(repo):
+    start_run(repo)
+    out = give_up_on_the_check(repo, "Blocked on you: the check needs a database.")
+    assert out.action == "allow" and "CHECK FAILING" in out.warning
+    assert "CHECK FAILING" in (repo / "PARKED.md").read_text()
+    run = State(repo).run()
+    assert run["paused"] == "blocked" and run["session_id"] == "s1"
+    assert run["last_handback"] == "Blocked on you: the check needs a database."
+    assert hand_back_status(repo) == ("ok", "hand-back: blocked")
+
+
+def test_another_stop_after_three_failed_checks_does_not_pause(repo):
+    start_run(repo)
+    assert give_up_on_the_check(repo, "Still failing.").action == "allow"
+    assert "paused" not in State(repo).run()
+
+
+def test_another_sessions_hand_back_after_three_failed_checks_does_not_pause(repo):
+    start_run(repo)
+    State(repo).bind_run("s1")
+    assert give_up_on_the_check(repo, "Blocked on you: x", session_id="s2").action == "allow"
+    assert "paused" not in State(repo).run()
+
+
+def test_a_later_hand_back_while_paused_is_the_last_hand_back(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN."), check=ok, ask=verdict(True))
+    message = "Decision needed: A or B?"
+    assert stop_gate.evaluate(inp(repo, last_assistant_message=message), check=ok, ask=boom).action == "allow"
+    run = State(repo).run()
+    assert run["last_handback"] == message and run["paused"] == "decision"
+
+
+def test_talk_while_paused_is_not_a_hand_back(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN."), check=ok, ask=verdict(True))
+    stop_gate.evaluate(inp(repo, last_assistant_message="It was the token."), check=ok, ask=boom)
+    assert State(repo).run()["last_handback"] == "Blocked on you: the VPN."
+
+
+def test_a_hand_back_from_another_session_does_not_pause(repo):
+    start_run(repo)
+    State(repo).bind_run("s1")
+    out = stop_gate.evaluate(inp(repo, session_id="s2", last_assistant_message="Blocked on you: x"), check=ok, ask=boom)
+    assert out.action == "allow" and "paused" not in State(repo).run()
+
+
+def test_another_sessions_hand_back_while_paused_changes_nothing(repo):
+    start_run(repo)
+    stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: the VPN."), check=ok, ask=verdict(True))
+    stop_gate.evaluate(inp(repo, session_id="s2", last_assistant_message="Decision needed: x"), check=ok, ask=boom)
+    run = State(repo).run()
+    assert run["last_handback"] == "Blocked on you: the VPN." and run["paused"] == "blocked"
+
+
+def test_run_complete_refused_while_paused_blocks_and_stays_paused(repo):
+    start_run(repo)
+    State(repo).pause_run("blocked", "Blocked on you: x")
+    State(repo).bind_run("s1")
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: W8."), check=ok, ask=verdict(False))
+    assert out.action == "block" and State(repo).run()["paused"] == "blocked"
+
+
+def test_a_hand_back_allowed_after_a_block_pauses(repo):
+    start_run(repo)
+    message = "Blocked on you: the VPN."
+    assert stop_gate.evaluate(inp(repo, last_assistant_message=message), check=ok, ask=verdict(False)).action == "block"
+    assert "paused" not in State(repo).run()
+    out = stop_gate.evaluate(inp(repo, last_assistant_message=message, stop_hook_active=True), check=ok, ask=verdict(True))
+    assert out.action == "allow" and State(repo).run()["paused"] == "blocked"
+
+
+def test_a_hand_back_while_a_subagent_runs_does_not_pause(repo):
+    start_run(repo)
+    running = [{"id": "a867", "type": "subagent", "status": "running"}]
+    out = stop_gate.evaluate(inp(repo, last_assistant_message="Blocked on you: x", background_tasks=running),
+                             check=boom, ask=boom, now=NOW)
+    assert out.action == "allow" and "paused" not in State(repo).run()
+
+
+BAD_BYTES = r"""command = "printf 'bad \\377 byte\\n'; exit {}" """
+
+
+@pytest.mark.parametrize("code, passed", [(1, False), (0, True)])
+def test_a_check_that_prints_non_utf8_bytes_keeps_its_verdict(repo, code, passed):
+    write_decl(repo, DECL.replace('command = "true"', BAD_BYTES.format(code)))
+    assert stop_gate.run_check(stop_gate.declaration.load(repo)) == (passed, "bad � byte")
+
+
+def test_a_failing_check_that_prints_non_utf8_bytes_blocks_the_stop_until_it_gives_up(repo):
+    write_decl(repo, DECL.replace('command = "true"', BAD_BYTES.format(1)))
+    (repo / "a.py").write_text("x")
+    assert stop_gate.evaluate(inp(repo)).action == "block"
+    assert {"step": "check", "ok": False}.items() <= _events(repo)[0].items()
+    for _ in range(2):
+        assert stop_gate.evaluate(inp(repo, stop_hook_active=True)).action == "block"
+    assert stop_gate.evaluate(inp(repo, stop_hook_active=True)).action == "allow"
+    assert "bad � byte" in (repo / "PARKED.md").read_text(encoding="utf-8")
+
+
+def test_a_hand_back_the_judge_refused_until_it_gave_up_does_not_pause(repo):
+    start_run(repo)
+    stop = inp(repo, last_assistant_message="Blocked on you: which unit next?")
+    assert stop_gate.evaluate(stop, check=ok, ask=verdict(False)).action == "block"
+    active = {**stop, "stop_hook_active": True}
+    for _ in range(2):
+        assert stop_gate.evaluate(active, check=ok, ask=verdict(False)).action == "block"
+    out = stop_gate.evaluate(active, check=ok, ask=verdict(False))
+    assert out.action == "allow" and "GATE NOT SATISFIED (judge)" in out.warning
+    assert "paused" not in State(repo).run()
+    assert not any(e["step"] == "stop" for e in _events(repo))
+    assert hand_back_status(repo)[0] == "FAIL"

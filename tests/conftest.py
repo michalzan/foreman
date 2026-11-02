@@ -53,6 +53,23 @@ def sh(root, *args):
     return subprocess.run(args, cwd=root, check=True, capture_output=True, text=True).stdout
 
 
+def raw_commit(repo, subject: bytes) -> None:
+    """Commit HEAD's tree on top of HEAD with these exact message bytes (git commit would re-encode them)."""
+    tree, parent = sh(repo, "git", "rev-parse", "HEAD^{tree}").strip(), sh(repo, "git", "rev-parse", "HEAD").strip()
+    body = b"tree %s\nparent %s\nauthor a <a@a> 1 +0000\ncommitter a <a@a> 1 +0000\n\n%s\n" % (
+        tree.encode(), parent.encode(), subject)
+    sha = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, input=body,
+                         check=True, capture_output=True).stdout.decode().strip()
+    sh(repo, "git", "reset", "-q", "--hard", sha)
+
+
+def stage_bad_name(repo) -> None:
+    """Stage bad\\xff.txt through the index: APFS refuses to create such a file, though a clone can carry the name."""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=b"x", check=True,
+                          capture_output=True).stdout.strip()
+    sh(repo, "git", "update-index", "--add", "--cacheinfo", b"100644,%s,bad\xff.txt" % blob)
+
+
 @pytest.fixture
 def repo(tmp_path, trust_store):
     root = tmp_path / "proj"

@@ -106,9 +106,11 @@ def invariants(run: list[dict]) -> list[tuple[str, str]]:
     # The last hand-back counts if no work came after it: talk after a Blocked on you is not a new hand-back.
     work = [i for i, e in enumerate(run) if e.get("step") in ("wait", "unit_check", "check") or e.get("action") == "block"]
     handed = [(i, e["opening"]) for i, e in enumerate(run) if e.get("step") == "stop" and e.get("opening") in OPENINGS]
+    pauses = [e["action"] for e in run if e.get("step") == "run" and e.get("action") in ("pause", "resume")]
+    paused = bool(pauses) and pauses[-1] == "pause"  # a run left paused handed back; what ran after was the user's errands
     if not _marked(run):
         out.append(("?", "hand-back: this log is too old to show it"))
-    elif handed and handed[-1][0] > max(work, default=-1):
+    elif handed and (paused or handed[-1][0] > max(work, default=-1)):
         out.append(("ok", f"hand-back: {handed[-1][1]}"))
     else:
         out.append(("FAIL", "no hand-back: the log ends without Run complete, Blocked on you or Decision needed"))

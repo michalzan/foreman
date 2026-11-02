@@ -101,3 +101,25 @@ def test_a_session_keeps_the_start_it_was_first_given(repo):
     st.session_started("s1", "aaa")
     st.session_started("s1", "bbb")
     assert st.session_head("s1") == "aaa"
+
+
+def test_pause_and_resume_round_trip(repo):
+    st = State(repo)
+    st.pause_run("blocked", "x")  # no run: nothing happens
+    assert st.run() is None
+    st.start_run([("PLAN.md", ["W8"])], "abc")
+    assert "paused" not in st.run()  # a run.json without paused reads as not paused
+    st.pause_run("decision", "Decision needed: A or B?")
+    assert st.run()["paused"] == "decision" and st.run()["last_handback"] == "Decision needed: A or B?"
+    st.resume_run()
+    assert "paused" not in st.run() and st.run()["last_handback"] == "Decision needed: A or B?"
+    lines = [json.loads(x) for x in (st.dir / "gate.log").read_text().splitlines()]
+    assert [(x["step"], x["action"]) for x in lines[-2:]] == [("run", "pause"), ("run", "resume")]
+    assert lines[-2]["opening"] == "decision"
+
+
+def test_last_handback_is_cut_to_500_characters(repo):
+    st = State(repo)
+    st.start_run([("PLAN.md", ["W8"])], "abc")
+    st.pause_run("blocked", "x" * 900)
+    assert len(st.run()["last_handback"]) == 500

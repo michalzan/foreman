@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -12,9 +13,10 @@ TIMEOUT: float | None = None
 
 
 def git(root: Path, *args: str) -> str:
+    # surrogateescape: a file name can hold any bytes, and only this keeps it a path that still opens
     return subprocess.run(
         ["git", "-c", "core.quotepath=off", *args],
-        cwd=root, check=True, capture_output=True, text=True, timeout=TIMEOUT,
+        cwd=root, check=True, capture_output=True, encoding="utf-8", errors="surrogateescape", timeout=TIMEOUT,
     ).stdout
 
 
@@ -72,6 +74,18 @@ def newest(root: Path, commits: list[str]) -> str:
     return ""
 
 
+def subjects(root: Path, since: str, limit: int = 30) -> list[str]:
+    """Subjects of the commits after `since`, newest first. Empty on an unknown `since` or a git failure."""
+    if not since:
+        return []
+    try:  # a message can hold any bytes, and nothing here may raise into the gate
+        out = subprocess.run(["git", "log", f"-{limit}", "--format=%s", "--end-of-options", f"{since}..HEAD"],
+                             cwd=root, check=True, capture_output=True, timeout=TIMEOUT).stdout
+        return out.decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+
+
 def changed_files(root: Path, since: str) -> list[str]:
     """Files committed after `since`, plus everything dirty. An unknown `since` counts as none."""
     committed: list[str] = []
@@ -88,6 +102,6 @@ def fingerprint(root: Path) -> str:
     h = hashlib.sha256(head(root).encode())
     for name in dirty_files(root):
         path = root / name
-        h.update(name.encode() + b"\0")
+        h.update(os.fsencode(name) + b"\0")
         h.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b"<gone>")
     return h.hexdigest()
