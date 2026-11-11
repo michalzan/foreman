@@ -87,6 +87,14 @@ def repo(tmp_path, trust_store):
     return root
 
 
+def in_run(root):
+    """A run owned by another session: the stop gate checks, and the judge (it judges only its own session) stays out."""
+    from state import State
+    st = State(root)
+    st.start_run([("PLAN.md", ["W1"])], sh(root, "git", "rev-parse", "HEAD").strip())
+    st.bind_run("other")
+
+
 @pytest.fixture(autouse=True)
 def no_tunnels(request, monkeypatch):
     """Tests must not depend on the tunnels open on this machine."""

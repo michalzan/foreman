@@ -7,7 +7,7 @@ import pytest
 import gitutil
 import report
 import stop_gate
-from conftest import DECL, raw_commit, sh, stage_bad_name, write_decl
+from conftest import DECL, in_run, raw_commit, sh, stage_bad_name, write_decl
 from state import State
 
 
@@ -30,7 +30,20 @@ def test_no_declaration_allows(tmp_path):
     assert stop_gate.evaluate(inp(tmp_path)).action == "allow"
 
 
+def test_outside_a_run_the_stop_is_not_checked(repo):
+    """The user is at the desk: a failing check, a frontend change without a screenshot, no judge (2026-11-11)."""
+    def boom(*a, **k):
+        raise AssertionError("judge called outside a run")
+    (repo / "a.py").write_text("x")
+    (repo / "frontend" / "src").mkdir(parents=True)
+    (repo / "frontend" / "src" / "App.tsx").write_text("x")
+    out = stop_gate.evaluate(inp(repo), check=failing, ask=boom)
+    assert out.action == "allow" and not out.warning
+    assert [{k: e[k] for k in ("step", "action")} for e in _events(repo)] == [{"step": "stop", "action": "allow"}]
+
+
 def test_unchanged_tree_runs_the_check_once(repo):
+    in_run(repo)
     calls = []
     (repo / "a.py").write_text("x")
     assert stop_gate.evaluate(inp(repo), check=passing(calls)).action == "allow"
@@ -39,6 +52,7 @@ def test_unchanged_tree_runs_the_check_once(repo):
 
 
 def test_failing_check_blocks_with_output(repo):
+    in_run(repo)
     (repo / "a.py").write_text("x")
     out = stop_gate.evaluate(inp(repo), check=failing)
     assert out.action == "block"
@@ -47,6 +61,7 @@ def test_failing_check_blocks_with_output(repo):
 
 
 def test_gives_up_loudly_after_three_blocks(repo):
+    in_run(repo)
     (repo / "a.py").write_text("x")
     assert stop_gate.evaluate(inp(repo), check=failing).action == "block"
     for _ in range(2):
@@ -58,6 +73,7 @@ def test_gives_up_loudly_after_three_blocks(repo):
 
 
 def test_a_new_turn_resets_the_attempt_count(repo):
+    in_run(repo)
     (repo / "a.py").write_text("x")
     for active in (False, True, True):
         stop_gate.evaluate(inp(repo, stop_hook_active=active), check=failing)
@@ -65,6 +81,7 @@ def test_a_new_turn_resets_the_attempt_count(repo):
 
 
 def test_real_check_timeout_is_a_named_failure(repo):
+    in_run(repo)
     write_decl(repo, 
         DECL.replace('command = "true"', 'command = "sleep 5"').replace("= 30", "= 1"))
     out = stop_gate.evaluate(inp(repo))
@@ -73,6 +90,7 @@ def test_real_check_timeout_is_a_named_failure(repo):
 
 
 def test_real_check_output_is_tailed_to_forty_lines(repo):
+    in_run(repo)
     write_decl(repo, 
         DECL.replace('command = "true"', 'command = "seq 1 100; exit 1"'))
     out = stop_gate.evaluate(inp(repo))
@@ -80,6 +98,7 @@ def test_real_check_output_is_tailed_to_forty_lines(repo):
 
 
 def test_check_that_rewrites_files_is_not_rerun(repo):
+    in_run(repo)
     calls = []
 
     def formatter(decl):
@@ -94,10 +113,11 @@ def test_check_that_rewrites_files_is_not_rerun(repo):
 
 
 def test_gate_logs_each_decision(repo):
+    in_run(repo)
     (repo / "a.py").write_text("x")
     stop_gate.evaluate(inp(repo), check=failing)
     events = [json.loads(x) for x in (State(repo).dir / "gate.log").read_text().splitlines()]
-    assert {"step": "check", "ok": False}.items() <= events[0].items()
+    assert {"step": "check", "ok": False}.items() <= events[1].items()  # after the run's start
     assert events[-1]["action"] == "block"
 
 
@@ -110,6 +130,7 @@ def run_main(monkeypatch, payload):
 
 
 def test_main_blocks_with_the_documented_shape(repo, monkeypatch):
+    in_run(repo)
     write_decl(repo, DECL.replace('command = "true"', 'command = "false"'))
     code, out = run_main(monkeypatch, inp(repo))
     assert code == 0 and out["decision"] == "block" and out["reason"]
@@ -144,6 +165,7 @@ def legit(*args, **kwargs):  # stands in for the judge, which arrives in Task 5
 
 
 def test_frontend_change_needs_a_newer_screenshot(repo):
+    in_run(repo)
     fe = repo / "frontend" / "src"
     fe.mkdir(parents=True)
     (fe / "App.tsx").write_text("x")
@@ -156,7 +178,9 @@ def test_frontend_change_needs_a_newer_screenshot(repo):
     old = shots / "old.png"
     old.write_bytes(b"png")
     os.utime(old, (time.time() - 3600, time.time() - 3600))
-    assert stop_gate.evaluate(inp(repo, stop_hook_active=True), check=ok).action == "block"
+    out = stop_gate.evaluate(inp(repo, stop_hook_active=True), check=ok)
+    # the agent is told the rule, not just asked again for a screenshot it already saved (review, 2026-11-02)
+    assert out.action == "block" and "newer than the last edit" in out.reason and "old.png" in out.reason
 
     (shots / "new.png").write_bytes(b"png")
     os.utime(shots / "new.png", (time.time() + 5, time.time() + 5))
@@ -369,6 +393,25 @@ def test_once_the_subagent_reported_back_the_stop_is_gated_again(repo, tmp_path)
     assert out.action == "block"
 
 
+def paused(agent_id, ts="2026-10-26T11:15:00.000Z"):
+    """The interim notification Claude Code 2.1.312 sends when a subagent waits on its own background work."""
+    return {"type": "queue-operation", "operation": "enqueue", "timestamp": ts, "content": (
+        f"<task-notification>\n<task-id>{agent_id}</task-id>\n<status>completed</status>\n"
+        f"<summary>Agent \"Task 3\" is waiting on its own background work</summary>\n<result>This agent has not "
+        "reported yet: it is waiting on its own background work.\n</result>\n</task-notification>")}
+
+
+def test_a_subagent_paused_on_its_own_background_work_is_still_working(repo, tmp_path):
+    """Three stops of one run checked a half-written tree, once alongside the subagent's own check (review, 2026-11-02)."""
+    start_run(repo)
+    t = transcript(tmp_path, launched("a2e2"), paused("a2e2"))
+    assert stop_gate.evaluate(inp(repo, transcript_path=t), check=boom, ask=boom, now=NOW).action == "allow"
+    assert stop_gate.evaluate(inp(repo, transcript_path=t, background_tasks=[]), check=boom, ask=boom,
+                              now=NOW).action == "allow"
+    t = transcript(tmp_path, launched("a2e2"), paused("a2e2"), notified("a2e2"))
+    assert stop_gate.pending_subagents(t, NOW) == []
+
+
 def test_one_finished_subagent_does_not_hide_one_still_working(repo, tmp_path):
     t = transcript(tmp_path, launched("aaa111"), notified("aaa111"), launched("bbb222", "2026-10-26T11:30:00.000Z"))
     assert stop_gate.pending_subagents(t, NOW) == ["bbb222"]
@@ -560,11 +603,6 @@ def passed_long_ago(repo):
     st.write({**st.read(), "passed_head": old})
 
 
-def test_frontend_commits_from_before_the_session_are_not_charged_to_it(repo):
-    passed_long_ago(repo)
-    frontend_commit(repo)
-    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
-    assert stop_gate.evaluate(inp(repo), check=passing([])).action == "allow"
 
 
 def test_frontend_commits_from_before_the_run_are_not_charged_to_it(repo):
@@ -577,12 +615,6 @@ def test_frontend_commits_from_before_the_run_are_not_charged_to_it(repo):
                               ask=legit).action == "allow"
 
 
-def test_the_sessions_own_frontend_commit_still_needs_a_walkthrough(repo):
-    passed_long_ago(repo)
-    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
-    frontend_commit(repo)
-    out = stop_gate.evaluate(inp(repo), check=passing([]))
-    assert out.action == "block" and "frontend/src/a.tsx" in out.reason
 
 
 def test_a_run_continued_in_a_new_session_still_walks_through_its_earlier_frontend_commits(repo):
@@ -591,7 +623,6 @@ def test_a_run_continued_in_a_new_session_still_walks_through_its_earlier_fronte
     (repo / "PLAN.md").write_text("resume: W8\n")
     State(repo).start_run([("PLAN.md", ["W8"])], sh(repo, "git", "rev-parse", "HEAD").strip())
     frontend_commit(repo)
-    State(repo).session_started("s1", sh(repo, "git", "rev-parse", "HEAD").strip())
     legit = lambda *a: type("V", (), {"legitimate": True, "why": ""})()
     out = stop_gate.evaluate(inp(repo, last_assistant_message="Run complete: W8."), check=passing([]), ask=legit)
     assert out.action == "block" and "frontend/src/a.tsx" in out.reason
@@ -599,6 +630,7 @@ def test_a_run_continued_in_a_new_session_still_walks_through_its_earlier_fronte
 
 def test_rewritten_history_still_counts_the_frontend_commits(repo):
     """After an amend or rebase no recorded commit is in HEAD any more; that must not mean nothing changed."""
+    in_run(repo)
     frontend_commit(repo)
     passed = sh(repo, "git", "rev-parse", "HEAD").strip()
     st = State(repo)
@@ -922,10 +954,11 @@ def test_a_check_that_prints_non_utf8_bytes_keeps_its_verdict(repo, code, passed
 
 
 def test_a_failing_check_that_prints_non_utf8_bytes_blocks_the_stop_until_it_gives_up(repo):
+    in_run(repo)
     write_decl(repo, DECL.replace('command = "true"', BAD_BYTES.format(1)))
     (repo / "a.py").write_text("x")
     assert stop_gate.evaluate(inp(repo)).action == "block"
-    assert {"step": "check", "ok": False}.items() <= _events(repo)[0].items()
+    assert {"step": "check", "ok": False}.items() <= _events(repo)[1].items()  # after the run's start
     for _ in range(2):
         assert stop_gate.evaluate(inp(repo, stop_hook_active=True)).action == "block"
     assert stop_gate.evaluate(inp(repo, stop_hook_active=True)).action == "allow"

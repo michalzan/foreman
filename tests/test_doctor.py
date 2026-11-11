@@ -207,25 +207,8 @@ def test_hooks_loaded_before_they_last_changed_are_named(repo, tmp_path, monkeyp
     assert capsys.readouterr().out == ""
 
 
-def test_the_session_start_records_where_the_session_began(repo, tmp_path, monkeypatch, capsys):
-    audited(repo)
-    monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo), "session_id": "s9"})
-    monkeypatch.setattr(doctor.Path, "home", lambda: make_home(tmp_path))
-    doctor.main([doctor.hookio.stamp()])
-    assert State(repo).session_head("s9") == doctor.gitutil.head(repo)
 
 
-def test_a_failed_record_of_the_session_start_keeps_the_findings(repo, tmp_path, monkeypatch, capsys):
-    audited(repo)
-    monkeypatch.setattr(doctor.hookio, "read_input", lambda: {"cwd": str(repo), "session_id": "s9"})
-    monkeypatch.setattr(doctor.Path, "home", lambda: make_home(tmp_path))
-    monkeypatch.setattr(doctor, "findings", lambda cwd, home: ["missing PARKED.md"])
-    def broken(self, sid, head):
-        raise OSError("state directory is a symlink")
-    monkeypatch.setattr(State, "session_started", broken)
-    doctor.main([doctor.hookio.stamp()])
-    message = json.loads(capsys.readouterr().out)["systemMessage"]
-    assert "missing PARKED.md" in message and "crashed" not in message
 
 
 def test_a_paused_run_says_the_next_launch_resumes_it(repo, tmp_path):

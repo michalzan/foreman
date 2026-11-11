@@ -11,7 +11,7 @@ import guard
 import judge
 import stop_gate
 import trust
-from conftest import DECL, write_decl
+from conftest import DECL, in_run, write_decl
 
 
 def inp(root):
@@ -110,6 +110,7 @@ def failing(decl):
 
 def test_symlinking_the_parked_file_does_not_switch_the_gate_off(repo, tmp_path):
     """A session must not be able to make the gate fail open by swapping a file it may edit."""
+    in_run(repo)
     victim = link_parked_to(repo, tmp_path)
     (repo / "a.py").write_text("x")
     assert stop_gate.evaluate(inp(repo), check=failing).action == "block"

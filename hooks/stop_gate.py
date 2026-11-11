@@ -25,7 +25,9 @@ TAIL_LINES = 40
 SUBAGENT_PATIENCE_SECONDS = 3 * 3600
 LAUNCHED = re.compile(r"Async agent launched.*?agentId: (\w+)", re.S)
 AGENT_TOOLS = ("Agent", "Task")  # Task: the tool's name before Claude Code 2.1
-NOTIFIED = re.compile(r"<task-notification>\s*<task-id>(\w+)</task-id>")
+NOTIFIED = re.compile(r"<task-notification>\s*<task-id>(\w+)</task-id>(.*?)(?=<task-notification>|\Z)", re.S)
+# Claude Code 2.1.312 notifies "completed" when a subagent pauses on its own background work, before it reports.
+INTERIM = "has not reported yet"
 
 
 @dataclass
@@ -117,15 +119,25 @@ def pending_subagents(transcript_path: str, now: float) -> list[str]:
     task-notification wakes the session when the subagent finishes. Until then, stopping is how
     the session waits; blocking that stop only leaves it a sleep loop (pilot runs, October 2026).
     """
+    return list(_subagents(transcript_path, now))
+
+
+def _subagents(transcript_path: str, now: float) -> dict[str, bool]:
+    """Pending subagents, each with whether its latest notification was an interim one."""
     if not transcript_path:
-        return []
+        return {}
     started: dict[str, float] = {}
+    interim: set[str] = set()
     agent_calls: set[str] = set()  # only the result of a real Agent call counts, not text that looks like one
     for rec in _records(transcript_path):
         content = (rec.get("message") or {}).get("content")
         if rec.get("type") == "queue-operation":
-            for agent in NOTIFIED.findall(str(rec.get("content", ""))):
-                started.pop(agent, None)
+            for agent, body in NOTIFIED.findall(str(rec.get("content", ""))):
+                if INTERIM in body:
+                    interim.add(agent)
+                else:
+                    started.pop(agent, None)
+                    interim.discard(agent)
         elif rec.get("type") == "assistant" and isinstance(content, list):
             agent_calls |= {str(c.get("id")) for c in content if isinstance(c, dict)
                             and c.get("type") == "tool_use" and c.get("name") in AGENT_TOOLS}
@@ -138,17 +150,20 @@ def pending_subagents(transcript_path: str, now: float) -> list[str]:
                         started[agent] = calendar.timegm(time.strptime(rec["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
                     except (KeyError, ValueError):
                         started[agent] = now
-    return [a for a, t0 in started.items() if now - t0 < SUBAGENT_PATIENCE_SECONDS]
+    return {a: a in interim for a, t0 in started.items() if now - t0 < SUBAGENT_PATIENCE_SECONDS}
 
 
 def running_subagents(inp: dict, now: float) -> list[str]:
     """Subagents still working. Claude Code lists them in the Stop input (`background_tasks`, seen in 2.1.310);
     older versions do not, and then the transcript is read instead."""
     tasks = inp.get("background_tasks")
-    if isinstance(tasks, list):
-        return [str(t.get("id", "")) for t in tasks
-                if isinstance(t, dict) and t.get("type") == "subagent" and t.get("status") == "running"]
-    return pending_subagents(str(inp.get("transcript_path") or ""), now)
+    path = str(inp.get("transcript_path") or "")
+    if not isinstance(tasks, list):
+        return pending_subagents(path, now)
+    listed = [str(t.get("id", "")) for t in tasks
+              if isinstance(t, dict) and t.get("type") == "subagent" and t.get("status") == "running"]
+    # One paused on its own background work may not be listed as running; its interim notification says it goes on.
+    return listed + [a for a, paused in _subagents(path, now).items() if paused and a not in listed]
 
 
 def running_commands(inp: dict) -> list[str]:
@@ -213,10 +228,17 @@ def _stale(inp: dict, now: float) -> Outcome | None:
         f"STALE HOOKS: {hookio.STALE}. Let go after {MAX_ATTEMPTS} attempts.", fresh=not inp.get("stop_hook_active"))
 
 
-def _walkthrough_is_fresh(st: State, root: Path, frontend_files: list[str]) -> bool:
-    edits = [(root / f).stat().st_mtime for f in frontend_files if (root / f).is_file()]
-    shots = [p.stat().st_mtime for p in st.walkthrough.glob("*.png")]
-    return not edits or (bool(shots) and max(shots) > max(edits))
+def _walkthrough_gap(st: State, root: Path, frontend_files: list[str]) -> str:
+    """"" when the newest screenshot is newer than the last edit to any changed frontend file, else why not."""
+    edits = [((root / f).stat().st_mtime, f) for f in frontend_files if (root / f).is_file()]
+    shots = [(p.stat().st_mtime, p.name) for p in st.walkthrough.glob("*.png")]
+    if not edits or (shots and max(shots) > max(edits)):
+        return ""
+    at = lambda t: time.strftime("%H:%M:%S", time.localtime(t))  # noqa: E731
+    edited, name = max(edits)
+    newest = f"the newest, {max(shots)[1]}, is from {at(max(shots)[0])}" if shots else "there is none"
+    return (f"A screenshot counts only if it is newer than the last edit to these files: {name} was edited at "
+            f"{at(edited)}, and {newest}.")
 
 
 def evaluate(inp: dict, *, check=run_check, ask=judge.ask, now: float | None = None, stale: bool = False) -> Outcome:
@@ -252,6 +274,9 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
             "Move it to the top of the repository."))
     decl = declaration.load(root)
     st = State(root)
+    if not st.run():  # outside a run the user is at the desk: no check, no walkthrough, no judge
+        st.log(step="stop", action="allow")
+        return Outcome("allow")
     waiting = running_subagents(inp, time.time() if now is None else now)
     if waiting:  # the tree is half-written and the session will be woken: nothing to check or judge yet
         st.log(step="wait", subagents=waiting)
@@ -307,16 +332,16 @@ def _evaluate(inp: dict, *, check, ask, now: float | None) -> Outcome:
             st.write(s)
         s = st.read()
         run = st.run()
-        # Measure from the newest of: the last passed stop, the run's start, and outside a run this session's
-        # start. Commits made while the gates were off belong to none of them. A run continued in a new
-        # session (after /clear, a crash, a restart for stale hooks) still answers for all its commits.
-        since = gitutil.newest(root, [s.get("passed_head", ""), (run or {}).get("start_head", "")]
-                               + ([] if run else [st.session_head(sid)]))
+        # Measure from the newer of the last passed stop and the run's start. Commits made while the gates were
+        # off belong to neither. A run continued in a new session (after /clear, a crash, a restart for stale
+        # hooks) still answers for all its commits.
+        since = gitutil.newest(root, [s.get("passed_head", ""), (run or {}).get("start_head", "")])
         frontend = [f for f in gitutil.changed_files(root, since)
                     if decl.frontend_paths and f.startswith(decl.frontend_paths)]
-        if frontend and not _walkthrough_is_fresh(st, root, frontend):
+        gap = _walkthrough_gap(st, root, frontend) if frontend else ""
+        if gap:
             return fail("walkthrough", (
-                "Frontend files changed: " + ", ".join(frontend[:10]) + ". "
+                "Frontend files changed: " + ", ".join(frontend[:10]) + ". " + gap + " "
                 "Open each changed screen in a browser, confirm it works, and save a "
                 "screenshot as .foreman/walkthrough/<name>.png before you stop."))
         if run and not run.get("paused"):

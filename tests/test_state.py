@@ -95,12 +95,6 @@ def test_start_and_end_of_a_run_are_logged_without_content(repo):
     assert "PLAN.md" not in (st.dir / "gate.log").read_text() and "W8" not in (st.dir / "gate.log").read_text()
 
 
-def test_a_session_keeps_the_start_it_was_first_given(repo):
-    """SessionStart fires again after compaction and on resume, with the same id: the first start must stay."""
-    st = State(repo)
-    st.session_started("s1", "aaa")
-    st.session_started("s1", "bbb")
-    assert st.session_head("s1") == "aaa"
 
 
 def test_pause_and_resume_round_trip(repo):

@@ -99,20 +99,6 @@ class State:
             self._write("run.json", run)
             self.log(step="run", action="resume")
 
-    def session_started(self, session_id: str, head: str) -> None:
-        """Where a session began, so the gates charge it only for what it did (the last 20 sessions are kept).
-        The first start counts: SessionStart fires again after compaction and on resume, with the same id."""
-        s = self.read()
-        sessions = dict(s.get("sessions") or {})
-        if session_id in sessions:
-            return
-        sessions[session_id] = head
-        s["sessions"] = dict(list(sessions.items())[-20:])
-        self.write(s)
-
-    def session_head(self, session_id: str) -> str:
-        return str((self.read().get("sessions") or {}).get(session_id, ""))
-
     def end_run(self, how: str = "") -> None:
         """how: complete (the session said so and the judge agreed) or stopped (run.py stop)."""
         if self.run():
